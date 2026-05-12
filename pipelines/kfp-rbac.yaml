@@ -1,0 +1,109 @@
+# KFP 파이프라인 컴포넌트 Pod 가 사용할 ServiceAccount/Role.
+# - MinIO/MLflow credential 환경변수 주입용 Secret
+# - kubectl apply InferenceService/VirtualService 권한 (serving ns)
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: kfp-pipeline-runner
+  namespace: kubeflow
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: pipeline-env
+  namespace: kubeflow
+type: Opaque
+stringData:
+  MINIO_ENDPOINT: http://minio.minio.svc.cluster.local:9000
+  MINIO_ACCESS_KEY: kfp-sa
+  MINIO_SECRET_KEY: "ChangeMe!Kfp2026"
+  MLFLOW_TRACKING_URI: http://mlflow.mlflow.svc.cluster.local:5000
+  MLFLOW_S3_ENDPOINT_URL: http://minio.minio.svc.cluster.local:9000
+  AWS_ACCESS_KEY_ID: kfp-sa
+  AWS_SECRET_ACCESS_KEY: "ChangeMe!Kfp2026"
+  SERVING_NS: serving
+---
+# serving ns 에 InferenceService/VirtualService apply 권한
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: kfp-serving-deployer
+  namespace: serving
+rules:
+  - apiGroups: ["serving.kserve.io"]
+    resources: ["inferenceservices"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["networking.istio.io"]
+    resources: ["virtualservices", "destinationrules"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: [""]
+    resources: ["services", "configmaps"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: kfp-serving-deployer
+  namespace: serving
+subjects:
+  - kind: ServiceAccount
+    name: kfp-pipeline-runner
+    namespace: kubeflow
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: kfp-serving-deployer
+---
+# manifest 템플릿 ConfigMap. deploy_canary 컴포넌트가 /templates 로 마운트해서 사용.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: serving-templates
+  namespace: kubeflow
+data:
+  inferenceservice.yaml.j2: |
+    apiVersion: serving.kserve.io/v1beta1
+    kind: InferenceService
+    metadata:
+      name: {{ name }}
+      namespace: {{ namespace }}
+      annotations:
+        serving.kserve.io/deploymentMode: RawDeployment
+      labels:
+        app: {{ name }}
+        variant: {{ variant }}
+        model-revision: {{ model_revision }}
+    spec:
+      predictor:
+        serviceAccountName: {{ service_account }}
+        minReplicas: 2
+        maxReplicas: 8
+        model:
+          modelFormat:
+            name: {{ model_format }}
+          storageUri: "{{ storage_uri }}"
+          resources:
+            requests: { cpu: "200m", memory: "512Mi" }
+            limits:   { cpu: "2",    memory: "2Gi" }
+  virtualservice.yaml.j2: |
+    apiVersion: networking.istio.io/v1beta1
+    kind: VirtualService
+    metadata:
+      name: {{ name }}
+      namespace: {{ namespace }}
+      labels:
+        app: {{ name }}
+        canary-revision: {{ canary_revision }}
+    spec:
+      hosts: [ "{{ host }}" ]
+      gateways: [ "istio-system/kserve-gateway" ]
+      http:
+        - route:
+            - destination:
+                host: {{ stable_host }}
+                port: { number: 80 }
+              weight: {{ stable_weight }}
+            - destination:
+                host: {{ canary_host }}
+                port: { number: 80 }
+              weight: {{ canary_weight }}

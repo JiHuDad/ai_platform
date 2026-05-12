@@ -1,0 +1,16 @@
+# istiod. KServe Raw Deployment 에서는 predictor pod 에 사이드카를 주입하지 않고,
+# 트래픽 라우팅은 ingressgateway + VirtualService 로 처리한다.
+# 적용:  helm upgrade --install istiod istio/istiod \
+#          -n istio-system -f 03-istiod-values.yaml
+pilot:
+  autoscaleEnabled: true
+  autoscaleMin: 2
+  autoscaleMax: 5
+meshConfig:
+  accessLogFile: /dev/stdout
+  enableTracing: true
+  defaultConfig:
+    holdApplicationUntilProxyStarts: true
+global:
+  proxy:
+    autoInject: disabled       # 명시적으로 ns 별 라벨링한 곳에서만 주입

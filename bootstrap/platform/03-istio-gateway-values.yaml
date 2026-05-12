@@ -1,0 +1,20 @@
+# istio-ingressgateway. MetalLB 가 LoadBalancer 외부 IP 를 발급.
+# 적용:  helm upgrade --install istio-ingressgateway istio/gateway \
+#          -n istio-system -f 03-istio-gateway-values.yaml
+service:
+  type: LoadBalancer
+  loadBalancerIP: 10.10.50.201      # ← 환경에 맞게 변경 (MetalLB pool 안)
+  ports:
+    - name: http2
+      port: 80
+      targetPort: 80
+    - name: https
+      port: 443
+      targetPort: 443
+autoscaling:
+  enabled: true
+  minReplicas: 2
+  maxReplicas: 5
+resources:
+  requests: { cpu: 200m, memory: 256Mi }
+  limits:   { cpu: "2",  memory: 1Gi }

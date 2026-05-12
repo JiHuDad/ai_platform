@@ -1,0 +1,38 @@
+# VirtualService — stable/canary 가중치 분배.
+# canary_weight 만 patch 하면 step-up/롤백 모두 처리된다.
+apiVersion: networking.istio.io/v1beta1
+kind: VirtualService
+metadata:
+  name: {{ name }}                              # 예: mlp
+  namespace: {{ namespace }}
+  labels:
+    app: {{ name }}
+    canary-revision: {{ canary_revision | default('none') }}
+    stable-revision: {{ stable_revision | default('none') }}
+spec:
+  hosts:
+    - "{{ host }}"                              # 예: mlp.mlplatform.local
+  gateways:
+    - istio-system/kserve-gateway
+  http:
+    - name: weighted
+      match:
+        - uri:
+            prefix: /v1/models/{{ name }}
+        - uri:
+            prefix: /v2/models/{{ name }}
+      retries:
+        attempts: 2
+        perTryTimeout: 2s
+        retryOn: 5xx,reset,connect-failure
+      route:
+        - destination:
+            host: {{ name }}-stable-predictor.{{ namespace }}.svc.cluster.local
+            port:
+              number: 80
+          weight: {{ stable_weight }}
+        - destination:
+            host: {{ name }}-canary-predictor.{{ namespace }}.svc.cluster.local
+            port:
+              number: 80
+          weight: {{ canary_weight }}

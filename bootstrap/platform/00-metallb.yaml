@@ -1,0 +1,21 @@
+# MetalLB L2 모드. 사내 가용 대역으로 IPAddressPool 을 수정해 적용한다.
+# 적용:  helm upgrade --install metallb metallb/metallb -n metallb-system
+#        kubectl apply -f 00-metallb.yaml
+apiVersion: metallb.io/v1beta1
+kind: IPAddressPool
+metadata:
+  name: lan-pool
+  namespace: metallb-system
+spec:
+  addresses:
+    - 10.10.50.200-10.10.50.250    # ← 환경에 맞게 변경
+  autoAssign: true
+---
+apiVersion: metallb.io/v1beta1
+kind: L2Advertisement
+metadata:
+  name: lan-l2
+  namespace: metallb-system
+spec:
+  ipAddressPools:
+    - lan-pool

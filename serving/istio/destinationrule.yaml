@@ -1,0 +1,34 @@
+# 공통 DestinationRule — connection pool / outlier 감지로 회로차단.
+apiVersion: networking.istio.io/v1beta1
+kind: DestinationRule
+metadata:
+  name: mlp-stable
+  namespace: serving
+spec:
+  host: mlp-stable-predictor.serving.svc.cluster.local
+  trafficPolicy:
+    connectionPool:
+      tcp: { maxConnections: 200 }
+      http: { http2MaxRequests: 1000, maxRequestsPerConnection: 100 }
+    outlierDetection:
+      consecutive5xxErrors: 5
+      interval: 30s
+      baseEjectionTime: 60s
+      maxEjectionPercent: 50
+---
+apiVersion: networking.istio.io/v1beta1
+kind: DestinationRule
+metadata:
+  name: mlp-canary
+  namespace: serving
+spec:
+  host: mlp-canary-predictor.serving.svc.cluster.local
+  trafficPolicy:
+    connectionPool:
+      tcp: { maxConnections: 100 }
+      http: { http2MaxRequests: 500, maxRequestsPerConnection: 100 }
+    outlierDetection:
+      consecutive5xxErrors: 3                  # canary 는 더 엄격하게
+      interval: 30s
+      baseEjectionTime: 60s
+      maxEjectionPercent: 100

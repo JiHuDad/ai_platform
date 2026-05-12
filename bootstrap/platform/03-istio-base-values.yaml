@@ -1,0 +1,4 @@
+# Istio base — CRD 만 설치.
+# 적용:  helm upgrade --install istio-base istio/base \
+#          -n istio-system -f 03-istio-base-values.yaml
+defaultRevision: default

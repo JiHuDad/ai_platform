@@ -1,0 +1,32 @@
+# KServe 가 사용할 단일 Istio Gateway. VirtualService 들이 이 Gateway 를 참조.
+apiVersion: networking.istio.io/v1beta1
+kind: Gateway
+metadata:
+  name: kserve-gateway
+  namespace: istio-system
+spec:
+  selector:
+    istio: ingressgateway
+  servers:
+    - port: { number: 80, name: http, protocol: HTTP }
+      hosts: ["*.mlplatform.local"]
+      tls:
+        httpsRedirect: true
+    - port: { number: 443, name: https, protocol: HTTPS }
+      hosts: ["*.mlplatform.local"]
+      tls:
+        mode: SIMPLE
+        credentialName: mlplatform-wildcard-tls
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: mlplatform-wildcard
+  namespace: istio-system
+spec:
+  secretName: mlplatform-wildcard-tls
+  commonName: "*.mlplatform.local"
+  dnsNames: ["*.mlplatform.local", "mlplatform.local"]
+  issuerRef:
+    name: mlplatform-ca
+    kind: ClusterIssuer

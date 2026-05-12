@@ -1,0 +1,11 @@
+# cert-manager. CRD 는 차트로 함께 설치.
+# 적용:  helm upgrade --install cert-manager jetstack/cert-manager \
+#          -n cert-manager -f 02-cert-manager-values.yaml --version v1.14.5
+installCRDs: true
+global:
+  leaderElection:
+    namespace: cert-manager
+prometheus:
+  enabled: true
+  servicemonitor:
+    enabled: true

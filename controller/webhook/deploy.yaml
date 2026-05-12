@@ -1,0 +1,104 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: ml-webhook
+  namespace: mlops
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: ml-webhook
+rules:
+  # rollback Job 생성
+  - apiGroups: ["batch"]
+    resources: ["jobs"]
+    verbs: ["create", "get", "list", "watch", "delete"]
+  # serving 리소스 조회
+  - apiGroups: ["serving.kserve.io"]
+    resources: ["inferenceservices"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["networking.istio.io"]
+    resources: ["virtualservices"]
+    verbs: ["get", "list", "watch", "patch", "update"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: ml-webhook
+subjects:
+  - kind: ServiceAccount
+    name: ml-webhook
+    namespace: mlops
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: ml-webhook
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ml-webhook
+  namespace: mlops
+spec:
+  replicas: 2
+  selector: { matchLabels: { app: ml-webhook } }
+  template:
+    metadata: { labels: { app: ml-webhook } }
+    spec:
+      serviceAccountName: ml-webhook
+      containers:
+        - name: webhook
+          image: harbor.mlplatform.local/mlplatform/ml-webhook:latest
+          ports: [{ containerPort: 8080 }]
+          env:
+            - { name: KFP_HOST,           value: "http://ml-pipeline.kubeflow.svc.cluster.local:8888" }
+            - { name: SERVING_NAMESPACE,  value: "serving" }
+            - { name: ROLLBACK_IMAGE,     value: "harbor.mlplatform.local/mlplatform/rollback-job:latest" }
+            - { name: FINETUNE_PIPELINE_ID, valueFrom: { configMapKeyRef: { name: pipeline-ids, key: finetune } } }
+          readinessProbe: { httpGet: { path: /healthz, port: 8080 } }
+          resources:
+            requests: { cpu: 50m, memory: 128Mi }
+            limits:   { cpu: 500m, memory: 512Mi }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ml-webhook
+  namespace: mlops
+spec:
+  selector: { app: ml-webhook }
+  ports: [{ name: http, port: 80, targetPort: 8080 }]
+---
+# canary-job / rollback-job 이 사용할 ServiceAccount (serving 리소스 patch)
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: rollback-runner
+  namespace: serving
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: rollback-runner
+  namespace: serving
+rules:
+  - apiGroups: ["networking.istio.io"]
+    resources: ["virtualservices"]
+    verbs: ["get", "list", "patch", "update", "create"]
+  - apiGroups: ["serving.kserve.io"]
+    resources: ["inferenceservices"]
+    verbs: ["get", "list", "patch", "update", "create", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: rollback-runner
+  namespace: serving
+subjects:
+  - kind: ServiceAccount
+    name: rollback-runner
+    namespace: serving
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: rollback-runner

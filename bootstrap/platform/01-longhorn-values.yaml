@@ -1,0 +1,23 @@
+# Longhorn 스토리지 클래스 (replica=3).
+# 적용:  helm upgrade --install longhorn longhorn/longhorn \
+#          -n longhorn-system -f 01-longhorn-values.yaml
+persistence:
+  defaultClass: true
+  defaultClassReplicaCount: 3
+  reclaimPolicy: Retain
+
+defaultSettings:
+  backupTarget: ""                  # 필요 시 s3://... 또는 NFS 로 채움
+  defaultDataLocality: best-effort
+  storageOverProvisioningPercentage: 200
+  storageMinimalAvailablePercentage: 10
+  guaranteedEngineManagerCPU: 12
+  guaranteedReplicaManagerCPU: 12
+
+# UI 외부 노출은 Istio Gateway 에서 처리하므로 비활성화.
+ingress:
+  enabled: false
+
+# 노드 라벨 `longhorn-storage=true` 인 워커만 데이터 노드로 사용 — 학습 GPU 노드와 분리.
+nodeSelector:
+  longhorn-storage: "true"

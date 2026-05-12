@@ -1,0 +1,32 @@
+# 사내 CA 또는 selfSigned 발급기. 외부 노출이 필요하면 ACME 로 교체.
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: selfsigned-root
+spec:
+  selfSigned: {}
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: mlplatform-ca
+  namespace: cert-manager
+spec:
+  isCA: true
+  commonName: mlplatform-internal-ca
+  secretName: mlplatform-ca-tls
+  duration: 87600h
+  privateKey:
+    algorithm: ECDSA
+    size: 256
+  issuerRef:
+    name: selfsigned-root
+    kind: ClusterIssuer
+---
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: mlplatform-ca
+spec:
+  ca:
+    secretName: mlplatform-ca-tls

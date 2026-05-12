@@ -1,0 +1,56 @@
+# MLflow Tracking + Model Registry.
+# 차트: community-charts/mlflow (또는 bitnami/mlflow). PostgreSQL backend, S3(MinIO) artifact.
+# 적용:  helm upgrade --install mlflow community-charts/mlflow \
+#          -n mlflow -f 12-mlflow-values.yaml
+backendStore:
+  postgres:
+    enabled: true
+    host: mlflow-postgresql
+    port: 5432
+    database: mlflow
+    user: mlflow
+    password: ChangeMe!Pg2026
+
+artifactRoot:
+  s3:
+    enabled: true
+    bucket: mlflow-artifacts
+    path: ""
+    awsAccessKeyId: mlflow-sa
+    awsSecretAccessKey: ChangeMe!Mlflow2026
+    s3EndpointUrl: http://minio.minio.svc.cluster.local:9000
+
+postgresql:
+  enabled: true
+  auth:
+    username: mlflow
+    password: ChangeMe!Pg2026
+    database: mlflow
+  primary:
+    persistence:
+      storageClass: longhorn
+      size: 20Gi
+
+service:
+  type: ClusterIP
+  port: 5000
+
+ingress:
+  enabled: false                  # Istio Gateway 로 노출
+
+extraEnvVars:
+  - name: MLFLOW_S3_ENDPOINT_URL
+    value: http://minio.minio.svc.cluster.local:9000
+  - name: AWS_ACCESS_KEY_ID
+    value: mlflow-sa
+  - name: AWS_SECRET_ACCESS_KEY
+    value: ChangeMe!Mlflow2026
+
+replicaCount: 2
+
+resources:
+  requests: { cpu: 100m, memory: 256Mi }
+  limits:   { cpu: "1",  memory: 1Gi }
+
+serviceMonitor:
+  enabled: true

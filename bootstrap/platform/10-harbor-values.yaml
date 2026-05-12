@@ -1,0 +1,36 @@
+# Harbor — 컨테이너/Helm 차트 레지스트리.
+# 적용:  helm upgrade --install harbor harbor/harbor \
+#          -n harbor -f 10-harbor-values.yaml
+expose:
+  type: loadBalancer
+  loadBalancer:
+    IP: 10.10.50.202                # ← MetalLB pool 안으로 변경
+    name: harbor
+  tls:
+    enabled: true
+    certSource: secret
+    secret:
+      secretName: harbor-tls        # cert-manager 가 발급 (별도 Certificate CR 필요)
+
+externalURL: https://harbor.mlplatform.local
+
+harborAdminPassword: "ChangeMe!2026"
+
+persistence:
+  enabled: true
+  resourcePolicy: keep
+  persistentVolumeClaim:
+    registry:    { storageClass: longhorn, size: 200Gi }
+    chartmuseum: { storageClass: longhorn, size: 20Gi }
+    jobservice:  { storageClass: longhorn, size: 5Gi  }
+    database:    { storageClass: longhorn, size: 10Gi }
+    redis:       { storageClass: longhorn, size: 2Gi  }
+    trivy:       { storageClass: longhorn, size: 10Gi }
+
+trivy:
+  enabled: true                    # 이미지 취약점 스캐너
+
+metrics:
+  enabled: true
+  serviceMonitor:
+    enabled: true

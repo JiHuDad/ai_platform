@@ -1,0 +1,17 @@
+# KServe Raw Deployment 가 생성하는 predictor Pod 의 /metrics 수집.
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: kserve-predictors
+  namespace: monitoring
+  labels: { release: monitoring }
+spec:
+  namespaceSelector:
+    matchNames: ["serving"]
+  selector:
+    matchLabels:
+      component: predictor
+  endpoints:
+    - port: http-usermetrics
+      interval: 15s
+      path: /metrics

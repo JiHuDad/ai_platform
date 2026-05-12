@@ -1,0 +1,77 @@
+# kube-prometheus-stack — Prometheus, Alertmanager, Grafana, node-exporter, kube-state-metrics.
+# 적용:  helm upgrade --install monitoring prometheus-community/kube-prometheus-stack \
+#          -n monitoring -f 04-kube-prometheus-stack-values.yaml
+prometheus:
+  prometheusSpec:
+    serviceMonitorSelectorNilUsesHelmValues: false   # 모든 ns 의 ServiceMonitor 수집
+    podMonitorSelectorNilUsesHelmValues: false
+    ruleSelectorNilUsesHelmValues: false
+    probeSelectorNilUsesHelmValues: false
+    scrapeInterval: 15s
+    evaluationInterval: 15s
+    retention: 15d
+    storageSpec:
+      volumeClaimTemplate:
+        spec:
+          accessModes: ["ReadWriteOnce"]
+          resources: { requests: { storage: 100Gi } }
+    additionalScrapeConfigs:
+      - job_name: pushgateway
+        honor_labels: true
+        static_configs:
+          - targets: ["pushgateway.monitoring.svc:9091"]
+
+alertmanager:
+  alertmanagerSpec:
+    storage:
+      volumeClaimTemplate:
+        spec:
+          accessModes: ["ReadWriteOnce"]
+          resources: { requests: { storage: 10Gi } }
+  config:
+    route:
+      group_by: ["alertname", "model"]
+      group_wait: 30s
+      group_interval: 5m
+      repeat_interval: 4h
+      receiver: ml-trigger-webhook
+      routes:
+        - matchers: [ severity = "critical", category = "model_drift" ]
+          receiver: ml-trigger-webhook
+        - matchers: [ severity = "critical", category = "serving_slo" ]
+          receiver: ml-rollback-webhook
+    receivers:
+      - name: ml-trigger-webhook
+        webhook_configs:
+          - url: http://ml-webhook.mlops.svc/trigger
+            send_resolved: false
+      - name: ml-rollback-webhook
+        webhook_configs:
+          - url: http://ml-webhook.mlops.svc/rollback
+            send_resolved: false
+
+grafana:
+  adminPassword: "change-me"
+  persistence:
+    enabled: true
+    size: 10Gi
+  sidecar:
+    dashboards:
+      enabled: true
+      label: grafana_dashboard
+      searchNamespace: ALL
+    datasources:
+      enabled: true
+  defaultDashboardsTimezone: browser
+  service:
+    type: ClusterIP             # Istio Gateway 로만 외부 노출
+  additionalDataSources:
+    - name: pushgateway
+      type: prometheus
+      url: http://monitoring-kube-prometheus-prometheus.monitoring.svc:9090
+      isDefault: false
+
+prometheusOperator:
+  admissionWebhooks:
+    patch:
+      enabled: true

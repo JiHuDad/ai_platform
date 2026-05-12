@@ -1,0 +1,41 @@
+# KServe InferenceService 템플릿 (Raw Deployment).
+# 같은 모델의 stable / canary 두 변형을 동시 배포한다.
+# 사용:  jinja2 렌더 후 kubectl apply.
+apiVersion: serving.kserve.io/v1beta1
+kind: InferenceService
+metadata:
+  name: {{ name }}                    # 예: mlp-stable / mlp-canary
+  namespace: {{ namespace }}
+  annotations:
+    serving.kserve.io/deploymentMode: RawDeployment
+    # KServe 가 만든 Deployment 의 max-surge/unavailable 제어
+    serving.kserve.io/rollout-strategy: RollingUpdate
+  labels:
+    app: {{ base_name }}             # 예: mlp
+    variant: {{ variant }}           # stable | canary
+    model-revision: {{ model_revision }}
+spec:
+  predictor:
+    serviceAccountName: kserve-s3
+    minReplicas: {{ min_replicas | default(2) }}
+    maxReplicas: {{ max_replicas | default(8) }}
+    scaleTarget: 70
+    scaleMetric: cpu
+    model:
+      modelFormat:
+        name: pytorch
+      runtime: kserve-torchserve     # PyTorch 표준 런타임
+      storageUri: "{{ storage_uri }}"
+      resources:
+        requests:
+          cpu: "{{ cpu_req | default('200m') }}"
+          memory: "{{ mem_req | default('512Mi') }}"
+        limits:
+          cpu: "{{ cpu_lim | default('2') }}"
+          memory: "{{ mem_lim | default('2Gi') }}"
+      env:
+        - name: STORAGE_URI
+          value: "{{ storage_uri }}"
+    logger:
+      mode: all
+      url: http://inference-logger.serving.svc/log/{{ base_name }}/{{ variant }}

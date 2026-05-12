@@ -1,0 +1,42 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: evidently-mlp
+  namespace: monitoring
+spec:
+  schedule: "*/15 * * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 1
+      template:
+        spec:
+          restartPolicy: Never
+          containers:
+            - name: evidently
+              image: harbor.mlplatform.local/mlplatform/evidently-job:latest
+              env:
+                - { name: MODEL_NAME,    value: "mlp" }
+                - { name: MODEL_VERSION, value: "current" }      # 'current' alias 로 reference 자동 갱신 가능
+                - { name: WINDOW_MINUTES,value: "60" }
+                - { name: MINIO_ENDPOINT,value: "http://minio.minio.svc.cluster.local:9000" }
+                - { name: PUSHGATEWAY_URL,value: "pushgateway.monitoring.svc:9091" }
+                - name: AWS_ACCESS_KEY_ID
+                  valueFrom: { secretKeyRef: { name: monitoring-minio-creds, key: AWS_ACCESS_KEY_ID } }
+                - name: AWS_SECRET_ACCESS_KEY
+                  valueFrom: { secretKeyRef: { name: monitoring-minio-creds, key: AWS_SECRET_ACCESS_KEY } }
+              resources:
+                requests: { cpu: 100m, memory: 256Mi }
+                limits:   { cpu: "1",  memory: 1Gi }
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: monitoring-minio-creds
+  namespace: monitoring
+type: Opaque
+stringData:
+  AWS_ACCESS_KEY_ID: kserve-sa
+  AWS_SECRET_ACCESS_KEY: "ChangeMe!Kserve2026"

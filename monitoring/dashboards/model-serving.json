@@ -1,0 +1,63 @@
+{
+  "title": "MLP Model Serving",
+  "uid": "mlp-serving",
+  "schemaVersion": 39,
+  "version": 1,
+  "timezone": "browser",
+  "tags": ["mlplatform", "mlp"],
+  "time": { "from": "now-6h", "to": "now" },
+  "refresh": "30s",
+  "templating": {
+    "list": [
+      { "name": "model", "type": "query", "datasource": "Prometheus",
+        "query": "label_values(istio_requests_total{destination_service_namespace=\"serving\"}, destination_app)",
+        "refresh": 1, "current": { "selected": true, "text": "mlp", "value": "mlp" } }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1, "type": "timeseries", "title": "QPS (stable vs canary)",
+      "gridPos": { "x": 0, "y": 0, "w": 12, "h": 8 },
+      "targets": [
+        { "expr": "sum by (destination_workload) (rate(istio_requests_total{destination_service_namespace=\"serving\",destination_app=~\"$model.*\"}[1m]))", "legendFormat": "{{destination_workload}}" }
+      ]
+    },
+    {
+      "id": 2, "type": "timeseries", "title": "5xx ratio",
+      "gridPos": { "x": 12, "y": 0, "w": 12, "h": 8 },
+      "targets": [
+        { "expr": "sum by (destination_workload) (rate(istio_requests_total{destination_service_namespace=\"serving\",destination_app=~\"$model.*\",response_code=~\"5..\"}[1m])) / sum by (destination_workload) (rate(istio_requests_total{destination_service_namespace=\"serving\",destination_app=~\"$model.*\"}[1m]))", "legendFormat": "{{destination_workload}}" }
+      ]
+    },
+    {
+      "id": 3, "type": "timeseries", "title": "p95 latency (ms)",
+      "gridPos": { "x": 0, "y": 8, "w": 12, "h": 8 },
+      "targets": [
+        { "expr": "histogram_quantile(0.95, sum by (le, destination_workload) (rate(istio_request_duration_milliseconds_bucket{destination_service_namespace=\"serving\",destination_app=~\"$model.*\"}[2m])))", "legendFormat": "{{destination_workload}}" }
+      ]
+    },
+    {
+      "id": 4, "type": "timeseries", "title": "Drift score (Evidently)",
+      "gridPos": { "x": 12, "y": 8, "w": 12, "h": 8 },
+      "targets": [
+        { "expr": "max by (model) (mlp_drift_score{model=\"$model\"})", "legendFormat": "drift_score" },
+        { "expr": "max by (model) (mlp_feature_drift_count{model=\"$model\"})", "legendFormat": "n_drifted_features" }
+      ],
+      "thresholds": [{ "value": 0.3, "color": "red" }]
+    },
+    {
+      "id": 5, "type": "stat", "title": "Canary weight (Istio VS)",
+      "gridPos": { "x": 0, "y": 16, "w": 6, "h": 4 },
+      "targets": [
+        { "expr": "mlp_canary_weight{model=\"$model\"}", "legendFormat": "canary" }
+      ]
+    },
+    {
+      "id": 6, "type": "table", "title": "Drift report links",
+      "gridPos": { "x": 6, "y": 16, "w": 18, "h": 4 },
+      "targets": [
+        { "expr": "mlp_drift_report_link{model=\"$model\"}", "legendFormat": "{{uri}}" }
+      ]
+    }
+  ]
+}

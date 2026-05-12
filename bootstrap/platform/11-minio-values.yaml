@@ -1,0 +1,49 @@
+# MinIO — distributed mode (4 노드 권장; 단일 노드 dev 면 mode: standalone).
+# 적용:  helm upgrade --install minio minio/minio \
+#          -n minio -f 11-minio-values.yaml
+mode: distributed
+replicas: 4
+drivesPerNode: 1
+
+persistence:
+  enabled: true
+  storageClass: longhorn
+  size: 500Gi
+
+rootUser: admin
+rootPassword: "ChangeMe!2026"
+
+# UI/API 외부 노출은 Istio Gateway 로 처리. 여기서는 ClusterIP.
+service:
+  type: ClusterIP
+consoleService:
+  type: ClusterIP
+
+# 부트스트랩 시 자동 생성할 버킷.
+buckets:
+  - { name: datasets,            policy: none, purge: false, versioning: true }
+  - { name: mlflow-artifacts,    policy: none, purge: false, versioning: true }
+  - { name: kfp-artifacts,       policy: none, purge: false, versioning: false }
+  - { name: inference-logs,      policy: none, purge: false, versioning: false }
+  - { name: reference-data,      policy: none, purge: false, versioning: true }
+  - { name: drift-reports,       policy: none, purge: false, versioning: false }
+  - { name: serving-manifests,   policy: none, purge: false, versioning: true }
+
+users:
+  - accessKey: mlflow-sa
+    secretKey: ChangeMe!Mlflow2026
+    policy: readwrite
+  - accessKey: kfp-sa
+    secretKey: ChangeMe!Kfp2026
+    policy: readwrite
+  - accessKey: kserve-sa
+    secretKey: ChangeMe!Kserve2026
+    policy: readonly
+
+metrics:
+  serviceMonitor:
+    enabled: true
+
+resources:
+  requests: { cpu: 250m, memory: 1Gi }
+  limits:   { cpu: "2",  memory: 4Gi }
