@@ -31,6 +31,8 @@ def attach_platform_env(task):
         config_map_key_to_env={
             "MLFLOW_TRACKING_URI": "MLFLOW_TRACKING_URI",
             "MINIO_ENDPOINT": "MINIO_ENDPOINT",
+            # mlflow client (boto3) 가 S3 artifact 업로드 시 참조 — 없으면 실제 AWS 로 감.
+            "MLFLOW_S3_ENDPOINT_URL": "MLFLOW_S3_ENDPOINT_URL",
         },
     )
     use_secret_as_env(
