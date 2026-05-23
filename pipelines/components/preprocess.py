@@ -39,8 +39,11 @@ def preprocess(
     scaler = StandardScaler().fit(X_tr)
     X_tr, X_va, X_te = scaler.transform(X_tr), scaler.transform(X_va), scaler.transform(X_te)
 
+    # np.savez_compressed(str_path, ...) 는 .npz 를 자동으로 붙이므로 KFP OutputPath
+    # (확장자 없음) 와 안 맞는다 — file handle 로 써서 path 그대로 쓴다.
     for path, X, y in [(train_out, X_tr, y_tr), (val_out, X_va, y_va), (test_out, X_te, y_te)]:
-        np.savez_compressed(path, X=X, y=y)
+        with open(path, "wb") as f:
+            np.savez_compressed(f, X=X, y=y)
 
     # scaler 직렬화
     import joblib
