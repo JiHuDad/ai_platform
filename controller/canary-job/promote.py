@@ -131,6 +131,7 @@ def rollback():
 def promote_alias_and_stable_isvc():
     """canary 가 모든 단계를 통과 → production alias 갱신 + stable storageUri 교체."""
     cli = MlflowClient()
+    cur_prod = None
     try:
         cur_prod = cli.get_model_version_by_alias(MODEL, "production")
         cli.set_registered_model_alias(MODEL, "previous", cur_prod.version)
@@ -138,7 +139,7 @@ def promote_alias_and_stable_isvc():
         log.info("no existing production alias — first promotion")
     cli.set_registered_model_alias(MODEL, "production", NEW_VERSION)
     log.info("MLflow alias production=%s (previous→%s)", NEW_VERSION,
-             getattr(cur_prod, "version", "none") if "cur_prod" in dir() else "none")
+             cur_prod.version if cur_prod else "none")
 
     # stable InferenceService 의 storageUri 를 새 버전으로 교체.
     new_uri = cli.get_model_version(MODEL, NEW_VERSION).source.replace("mlflow-artifacts:", "s3://mlflow-artifacts")

@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# Harbor 로 이미지 빌드/푸시. 이미지 태그는 git short SHA.
+# 로컬 registry 로 이미지 빌드/푸시. 이미지 태그는 git short SHA.
 set -euo pipefail
 
-REGISTRY="${REGISTRY:-harbor.mlplatform.local/mlplatform}"
+REGISTRY="${REGISTRY:-kfp-registry:5000/mlplatform}"
 TAG="${TAG:-$(git -C "$(dirname "$0")/.." rev-parse --short HEAD 2>/dev/null || date +%s)}"
 
 cd "$(dirname "$0")"

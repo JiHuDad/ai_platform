@@ -16,7 +16,7 @@ spec:
           restartPolicy: Never
           containers:
             - name: evidently
-              image: harbor.mlplatform.local/mlplatform/evidently-job:latest
+              image: kfp-registry:5000/mlplatform/evidently-job:latest
               env:
                 - { name: MODEL_NAME,    value: "mlp" }
                 - { name: MODEL_VERSION, value: "current" }      # 'current' alias 로 reference 자동 갱신 가능

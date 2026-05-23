@@ -27,7 +27,7 @@ KFP_HOST = os.environ.get("KFP_HOST", "http://ml-pipeline.kubeflow.svc.cluster.l
 KFP_NAMESPACE = os.environ.get("KFP_NAMESPACE", "kubeflow")
 FINETUNE_PIPELINE_ID = os.environ.get("FINETUNE_PIPELINE_ID", "")
 FINETUNE_EXPERIMENT = os.environ.get("FINETUNE_EXPERIMENT", "finetune-auto")
-ROLLBACK_IMAGE = os.environ.get("ROLLBACK_IMAGE", "harbor.mlplatform.local/mlplatform/rollback-job:latest")
+ROLLBACK_IMAGE = os.environ.get("ROLLBACK_IMAGE", "kfp-registry:5000/mlplatform/rollback-job:latest")
 SERVING_NAMESPACE = os.environ.get("SERVING_NAMESPACE", "serving")
 
 app = FastAPI()
@@ -66,9 +66,8 @@ def _has_active_finetune_run(client: KFPClient, model: str) -> bool:
         page_size=20,
         filter='{"predicates":[{"key":"state","op":"EQUALS","string_value":"RUNNING"}]}',
     )
+    # 단순화: run name 에 모델명 포함 컨벤션 사용 (display_name 에 model substring).
     for r in (runs.runs or []):
-        params = {p.name: p.value for p in (r.run_details.pipeline_runtime.workflow_manifest or []) if False}
-        # 단순화: run name 에 모델명 포함 컨벤션 사용
         if model in (r.display_name or ""):
             return True
     return False

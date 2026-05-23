@@ -7,7 +7,7 @@ from kfp import dsl
 
 
 @dsl.component(
-    base_image="harbor.mlplatform.local/mlplatform/trainer:latest",
+    base_image="kfp-registry:5000/mlplatform/trainer:latest",
 )
 def train_mlp(
     train_npz: dsl.InputPath("Dataset"),

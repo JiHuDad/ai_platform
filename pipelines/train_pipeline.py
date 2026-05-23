@@ -61,6 +61,7 @@ def train_pipeline(
             git_sha=git_sha,
             kfp_run_id=dsl.PIPELINE_JOB_NAME_PLACEHOLDER,
             triggered_by=triggered_by,
+            base_dataset_uri="",   # train 은 자기 자신이 base.
         )
         deploy_canary(
             model_name=model_name,

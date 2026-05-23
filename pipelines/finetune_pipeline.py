@@ -47,12 +47,12 @@ def finetune_pipeline(
         epochs=epochs,
         lr=lr,
         batch_size=batch_size,
-        base_checkpoint_uri=prod.outputs["base_checkpoint_uri_out"],
+        base_checkpoint_uri=prod.outputs["base_checkpoint_uri"],
     )
     ev = evaluate(
         model_dir=tr.outputs["model_out"],
         test_npz=prep.outputs["test_out"],
-        baseline_accuracy=prod.outputs["production_accuracy_out"],
+        baseline_accuracy=prod.outputs["production_accuracy"],
     )
     with dsl.If(ev.outputs["passed"] == "true", name="fine-tune-improved"):
         reg = register_to_mlflow(
@@ -64,6 +64,7 @@ def finetune_pipeline(
             git_sha=git_sha,
             kfp_run_id=dsl.PIPELINE_JOB_NAME_PLACEHOLDER,
             triggered_by=triggered_by,
+            base_dataset_uri=base_dataset_uri,  # finetune lineage: 어느 base 에서 derive 됐는지.
         )
         dep = deploy_canary(
             model_name=model_name,

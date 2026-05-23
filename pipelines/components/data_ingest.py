@@ -3,7 +3,7 @@ from kfp import dsl
 
 
 @dsl.component(
-    base_image="harbor.mlplatform.local/mlplatform/trainer:latest",
+    base_image="kfp-registry:5000/mlplatform/trainer:latest",
     packages_to_install=[],
 )
 def data_ingest(

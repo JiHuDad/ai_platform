@@ -84,7 +84,7 @@ def compute_drift(reference: pd.DataFrame, current: pd.DataFrame) -> tuple[float
     ref = reference[feature_cols]
     cur = current[[c for c in feature_cols if c in current.columns]]
     # 컬럼 정렬 일치화
-    cur = cur.reindex(columns=feature_cols).fillna(method="ffill").fillna(0.0)
+    cur = cur.reindex(columns=feature_cols).ffill().fillna(0.0)
 
     report = Report(metrics=[DataDriftPreset()])
     report.run(reference_data=ref, current_data=cur)

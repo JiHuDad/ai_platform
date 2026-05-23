@@ -7,7 +7,7 @@ from kfp import dsl
 
 
 @dsl.component(
-    base_image="harbor.mlplatform.local/mlplatform/trainer:latest",
+    base_image="kfp-registry:5000/mlplatform/trainer:latest",
 )
 def assemble_finetune_dataset(
     model_name: str,

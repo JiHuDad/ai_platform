@@ -7,7 +7,7 @@ from kfp import dsl
 
 
 @dsl.component(
-    base_image="harbor.mlplatform.local/mlplatform/trainer:latest",
+    base_image="kfp-registry:5000/mlplatform/trainer:latest",
 )
 def trigger_promote_job(
     model_name: str,
@@ -44,7 +44,7 @@ def trigger_promote_job(
                     containers=[client.V1Container(
                         name="promote",
                         image=os.environ.get("PROMOTE_IMAGE",
-                                             "harbor.mlplatform.local/mlplatform/canary-job:latest"),
+                                             "kfp-registry:5000/mlplatform/canary-job:latest"),
                         env=[
                             client.V1EnvVar(name="MODEL_NAME", value=model_name),
                             client.V1EnvVar(name="NEW_MODEL_VERSION", value=new_model_version),

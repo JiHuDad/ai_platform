@@ -9,7 +9,7 @@ from kfp import dsl
 
 
 @dsl.component(
-    base_image="harbor.mlplatform.local/mlplatform/trainer:latest",
+    base_image="kfp-registry:5000/mlplatform/trainer:latest",
 )
 def register_to_mlflow(
     model_dir: dsl.InputPath("Model"),
@@ -20,6 +20,7 @@ def register_to_mlflow(
     git_sha: str,
     kfp_run_id: str,
     triggered_by: str,                # "manual" | "drift" | "scheduled"
+    base_dataset_uri: str,            # finetune 일 때 derive 된 base. train 은 "".
     model_version_out: dsl.OutputPath("String"),
     model_uri_out: dsl.OutputPath("String"),
 ) -> None:
@@ -53,13 +54,16 @@ def register_to_mlflow(
         v = mv
 
     # 표준 lineage 태그 부착
-    for k, val in {
+    tags = {
         "dataset_uri": dataset_uri,
         "dataset_hash": dataset_hash,
         "git_sha": git_sha,
         "kfp_run_id": kfp_run_id,
         "triggered_by": triggered_by,
-    }.items():
+    }
+    if base_dataset_uri:
+        tags["base_dataset_uri"] = base_dataset_uri
+    for k, val in tags.items():
         client.set_model_version_tag(model_name, v.version, k, val)
 
     # staging alias 부여

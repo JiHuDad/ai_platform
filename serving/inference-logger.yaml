@@ -13,7 +13,7 @@ spec:
       serviceAccountName: kserve-s3
       containers:
         - name: logger
-          image: harbor.mlplatform.local/mlplatform/inference-logger:latest
+          image: kfp-registry:5000/mlplatform/inference-logger:latest
           ports: [{ containerPort: 8080 }]
           env:
             - name: SINK_BUCKET

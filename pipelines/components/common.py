@@ -5,7 +5,7 @@ KFP v2 에서는 컴포넌트 함수가 격리 환경에서 직렬화되므로,
 """
 from __future__ import annotations
 
-TRAINER_IMAGE = "harbor.mlplatform.local/mlplatform/trainer:latest"
+TRAINER_IMAGE = "kfp-registry:5000/mlplatform/trainer:latest"
 
 MLFLOW_TRACKING_URI = "http://mlflow.mlflow.svc.cluster.local:5000"
 MINIO_ENDPOINT = "http://minio.minio.svc.cluster.local:9000"
