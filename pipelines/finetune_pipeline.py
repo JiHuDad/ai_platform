@@ -8,6 +8,7 @@
 from kfp import dsl
 
 from pipelines.components.assemble_finetune_dataset import assemble_finetune_dataset
+from pipelines.components.common import attach_platform_env
 from pipelines.components.deploy_canary import deploy_canary
 from pipelines.components.evaluate import evaluate
 from pipelines.components.preprocess import preprocess
@@ -29,18 +30,18 @@ def finetune_pipeline(
     git_sha: str = "auto",
     triggered_by: str = "drift",
 ):
-    prod = pull_production_model(model_name=model_name)
-    ds = assemble_finetune_dataset(
+    prod = attach_platform_env(pull_production_model(model_name=model_name))
+    ds = attach_platform_env(assemble_finetune_dataset(
         model_name=model_name,
         base_dataset_uri=base_dataset_uri,
         window_hours=window_hours,
-    )
-    prep = preprocess(
+    ))
+    prep = attach_platform_env(preprocess(
         input_dir=ds.outputs["output_dir"],
         model_name=model_name,
         model_version="finetune",
-    )
-    tr = train_mlp(
+    ))
+    tr = attach_platform_env(train_mlp(
         train_npz=prep.outputs["train_out"],
         val_npz=prep.outputs["val_out"],
         hidden_dims=hidden_dims,
@@ -48,14 +49,14 @@ def finetune_pipeline(
         lr=lr,
         batch_size=batch_size,
         base_checkpoint_uri=prod.outputs["base_checkpoint_uri"],
-    )
-    ev = evaluate(
+    ))
+    ev = attach_platform_env(evaluate(
         model_dir=tr.outputs["model_out"],
         test_npz=prep.outputs["test_out"],
         baseline_accuracy=prod.outputs["production_accuracy"],
-    )
+    ))
     with dsl.If(ev.outputs["passed"] == "true", name="fine-tune-improved"):
-        reg = register_to_mlflow(
+        reg = attach_platform_env(register_to_mlflow(
             model_dir=tr.outputs["model_out"],
             metrics=ev.outputs["metrics_out"],
             model_name=model_name,
@@ -65,18 +66,18 @@ def finetune_pipeline(
             kfp_run_id=dsl.PIPELINE_JOB_NAME_PLACEHOLDER,
             triggered_by=triggered_by,
             base_dataset_uri=base_dataset_uri,  # finetune lineage: 어느 base 에서 derive 됐는지.
-        )
-        dep = deploy_canary(
+        ))
+        dep = attach_platform_env(deploy_canary(
             model_name=model_name,
             model_version=reg.outputs["model_version_out"],
             storage_uri=reg.outputs["model_uri_out"],
             initial_canary_weight=10,
-        ).after(reg)
-        trigger_promote_job(
+        )).after(reg)
+        attach_platform_env(trigger_promote_job(
             model_name=model_name,
             new_model_version=reg.outputs["model_version_out"],
             serving_ns="serving",
-        ).after(dep)
+        )).after(dep)
 
 
 if __name__ == "__main__":
