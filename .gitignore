@@ -4,4 +4,10 @@ __pycache__/
 *.pyo
 .DS_Store
 /tmp/
-*.yaml.compiled
+
+# 컴파일 산출물 (compile-and-register.sh / .venv/bin/python -m pipelines.* 가 생성)
+pipelines/train_pipeline.yaml
+pipelines/finetune_pipeline.yaml
+
+# fixtures 의 생성 데이터
+fixtures/iris.csv
