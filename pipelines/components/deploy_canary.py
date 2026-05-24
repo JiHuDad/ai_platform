@@ -33,6 +33,7 @@ def deploy_canary(
     is_tmpl = Path("/templates/inferenceservice.yaml.j2").read_text()
     is_yaml = Template(is_tmpl).render(
         name=f"{model_name}-canary",
+        base_name=model_name,           # mlp.yaml.j2 의 labels.app — 누락 시 Undefined → 빈 라벨 → kubectl apply 거부.
         namespace=serving_ns,
         variant="canary",
         model_format="pytorch",
