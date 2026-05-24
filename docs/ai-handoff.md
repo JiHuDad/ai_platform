@@ -7,9 +7,11 @@
 
 ---
 
-## 0. 한 줄 상태 (2026-05-23 22:30 KST)
+## 0. 한 줄 상태 (2026-05-24 11:50 KST)
 
-**Phase 1: ✅ GREEN-LIGHT.** train_pipeline 이 KFP 에서 실제로 돌고, MLflow 에 `mlp v1` + 5종 lineage 태그 등록, MinIO 에 model artifact (`model.pt`, `state_dict.pt`, `meta.json`) 적재까지 확인. `deploy_canary` 의 *예상된 실패* (KServe 없음 + template file 누락) 가 Phase 2 의 시작점.
+**Phase 1: ✅ GREEN-LIGHT.** train_pipeline 이 KFP 에서 실제로 돌고, MLflow 에 `mlp v1, v2` 등록 (둘 다 5종 lineage 태그 miss=OK, staging alias=v2), MinIO 에 model artifact 적재. `deploy_canary` 의 *예상된 실패* 가 Phase 2 의 시작점.
+
+**잔여 정리 + image diet 도 완료**: `compile-and-register.sh` idempotent rewrite, staging alias 실제 set 검증, trainer image **8.66 GB → 1.81 GB (5×↓)** 후 run-4 동일 green-light. Disk 86% → 78% (docker prune + completed pods cleanup).
 
 ---
 
@@ -37,9 +39,12 @@
 
 ---
 
-## 2. Commit history (이 두 세션)
+## 2. Commit history (이 세션들)
 
 ```
+e789c39 feat(trainer): CPU-only base — 8.66GB → 1.81GB (5×↓)
+ad89b13 fix(scripts): compile-and-register 를 idempotent + venv-aware 로 다시 짬
+f436289 docs: phase 1 green-light snapshot + session resume notes
 247a9bb fix(env): inject MLFLOW_S3_ENDPOINT_URL so mlflow client points at Pi4 MinIO
 d5da6ac fix(preprocess): np.savez_compressed → .npz auto-suffix 깨짐, file handle 로 우회
 7bf308c chore(gitignore): exclude compile artifacts + generated fixture
@@ -52,7 +57,7 @@ ad6907e feat: scaffold MLP MLOps platform end-to-end
 d48ab48 chore: initialize repo
 ```
 
-여덟 개의 *진실 검증된* 변경 (compile 통과 / pod completed / MLflow 등록 / MinIO artifact 등 증거가 commit body 에 있음).
+매 commit body 에 *진실 검증* 증거 (compile 통과 / pod completed / MLflow 등록 / MinIO artifact / image size 등).
 
 ---
 
@@ -72,34 +77,33 @@ d48ab48 chore: initialize repo
 - KFP 의 `mlp-train`, `mlp-finetune` 두 파이프라인 업로드됨
 
 ### leaf007 trainer image
-- `kfp-registry:5000/mlplatform/trainer:3c6df20` / `:latest` — 8.66GB, pytorch 2.3 + 12 패키지
+- `kfp-registry:5000/mlplatform/trainer:cpu` / `:latest` — **1.81GB**, python:3.10-slim + CPU torch + 11 패키지
+- (옛 8.66GB image `:3c6df20` 는 prune 됨)
 
 ---
 
 ## 4. Phase 1 의 진실 (그린라이트 증거)
 
-run-3 `fc33eb8a-437d-4d0f-b5ba-3c29557dfb1b`:
+두 번의 green-light run:
+- **run-3** `fc33eb8a-...`: 첫 green-light. → mlp v1 등록.
+- **run-4** `c71fc385-...`: image diet 후 동일 결과 재현. → mlp v2 등록.
 
 ```
 KFP DAG: data_ingest → preprocess → train_mlp → evaluate → register_to_mlflow → [deploy_canary FAIL — 예상]
-                  Completed    Completed   Completed  Completed   Completed
+              Completed   Completed   Completed   Completed       Completed
 
-MLflow v1 (가져온 값):
-  v1  miss=OK  aliases=[]
-    dataset_uri          = s3://datasets/demo/iris/20260523-v1/
-    dataset_hash         = 39706f147590c33e41c0a38a1defc91020d1bca81ca67f3c375fc04e0d0554cf
-    git_sha              = smoke-mlflow-s3-fix
-    kfp_run_id           = train-smoke-3
-    triggered_by         = manual
-    source               = s3://mlflow-artifacts/0/3563879029b744c3b21a480b1755d433/artifacts/model
+MLflow registry (서버 측 진리):
+  registered_model: mlp
+  aliases: {'staging': '2'}            # search_model_versions 의 mv.aliases 는 빈 list — search API limitation 확인됨
+  v2  git_sha=smoke-cpu-image           kfp_run_id=train-smoke-4-cpu
+  v1  git_sha=smoke-mlflow-s3-fix       kfp_run_id=train-smoke-3
+  둘 다 같은 dataset_hash=39706f147590c33e..., 5종 lineage 태그 miss=OK
 
-MinIO artifact (라파):
-  mlflow-artifacts/0/3563879029b744c3b21a480b1755d433/artifacts/model/meta.json       (197B)
-  mlflow-artifacts/0/3563879029b744c3b21a480b1755d433/artifacts/model/model.pt        (46KiB)
-  mlflow-artifacts/0/3563879029b744c3b21a480b1755d433/artifacts/model/state_dict.pt   (38KiB)
+MinIO artifact (라파, 각 버전 마다):
+  mlflow-artifacts/0/<run_uuid>/artifacts/model/meta.json       (197B)
+  mlflow-artifacts/0/<run_uuid>/artifacts/model/model.pt        (46KiB, TorchScript)
+  mlflow-artifacts/0/<run_uuid>/artifacts/model/state_dict.pt   (38KiB)
 ```
-
-작은 디테일: `aliases=[]` 인데 register 로그는 "staging alias set" — MLflow v2.16 의 `search_model_versions` 가 alias 를 안 채울 가능성. `get_model_version_by_alias("mlp", "staging")` 로 확인하면 됨 — 별도 검증 항목.
 
 ---
 
@@ -157,32 +161,54 @@ python -c "import kfp; print(kfp.__version__)"   # 2.16.1
 
 ---
 
-## 8. 다음 작업 후보 (우선순위)
+## 8. 다음 작업 (Phase 2 시작)
 
-### A. Phase 2 시작: serving stack (반나절~하루)
-1. trainer image (또는 별도 image) 에 `serving/{inferenceservice,istio}/*.yaml.j2` COPY 추가 → `/templates/` 에 두기. `deploy_canary` 의 첫 번째 실패 원인 해결.
-2. cert-manager + Istio 인스톨 (helm). 16GB RAM 의 leaf007 에 부담 — istiod 메모리 limit 보수적으로.
-3. KServe 인스톨 (Raw Deployment mode). KServe CRD + controller.
-4. `kserve-s3` ServiceAccount + secret (라파 MinIO 자격) in `serving` ns.
-5. Phase 1 의 mlp v1 을 가지고 `deploy_canary` 만 단독 호출해보기 — 아니면 train_pipeline 의 deploy_canary 까지 재실행.
+§8.B (Phase 1 잔여 정리) + image diet 는 이미 끝. 남은 path 는 **Phase 2 = serving stack**. 반나절~하루 분량. leaf007 의 RAM 11GB / Disk 30GB free 면 충분 (자원 어림은 별도 메모 참조).
 
-### B. Phase 1 의 작은 정리
-- `pipelines/compile-and-register.sh` 다시 짜기 (`.venv/bin/python`, `pipelines/*.yaml` path, kfp CLI). 지금은 인라인 명령으로 우회 — 다음 컴파일 시 또 헷갈림.
-- MLflow alias `staging` 이 실제로 set 됐는지 `get_model_version_by_alias("mlp", "staging")` 로 확인. 안 됐으면 register_to_mlflow.py 의 try/except 가 silent fail 한 자리.
-- pull_production_model.py 의 NamedTuple refactor 가 finetune_pipeline 에서만 사용. compile 만 통과한 상태 — 실제 run 검증은 Phase 3 영역이지만 phase 2 들어가기 전에 dry-run 한 번 해볼 가치.
+### A.1 trainer image 에 templates COPY
+`images/trainer/Dockerfile` 에 한 줄:
+```dockerfile
+COPY ../../serving /templates
+```
+또는 build context 를 repo root 로 바꾸고 명시. 그래야 `deploy_canary.py` 의 `Path("/templates/inferenceservice.yaml.j2").read_text()` 가 동작. 재빌드 + push 후 train_pipeline 재실행 — deploy_canary 까지 가는 *첫 번째 진실*.
 
-### C. Phase 3 으로 직진 (안 권장)
-serving 없이 drift→finetune 루프만 검증하는 건 *기둥 없는 천장*. B → A → C 순서.
+### A.2 cert-manager (helm)
+Istio 의 webhook TLS 발급용. 가장 가벼움 (~130MB).
+
+### A.3 Istio (helm)
+- `istio-base` + `istiod` + `istio-ingressgateway`
+- demo profile 보다 minimal profile 권장 (RAM 절약)
+- istiod 의 메모리 limit 을 명시적으로 (e.g. 512Mi) — 16GB 머신에 default(2Gi+) 면 부담
+
+### A.4 KServe (Raw mode)
+- KServe CRD + controller-manager
+- `--set kserve.controller.deploymentMode=RawDeployment` 또는 ConfigMap 으로 명시
+- Knative 의존성 제거가 핵심 — Raw 만 사용한다는 README 의 결정 반영
+
+### A.5 serving ns + S3 자격
+- `serving` namespace
+- `kserve-s3` ServiceAccount + Secret (라파 MinIO 의 admin/ChangeMe!2026 또는 별도 user 발급)
+- KServe 의 `InferenceService.spec.predictor.serviceAccountName` 가 이걸 참조
+
+### A.6 mlp v2 를 production alias 로 + deploy_canary 검증
+현재 `staging` alias=v2. production 으로 옮긴 후:
+- `train_pipeline` 의 deploy_canary 단계까지 통과 (이번엔 KServe 가 있으니 *진짜* canary InferenceService 가 뜸)
+- `kubectl -n serving get isvc mlp-canary` 가 Ready
+- `curl mlp.mlplatform.local/v1/models/mlp:predict` 가 200 + 정상 prediction
+
+이게 Phase 2 의 green-light. 그 후 Phase 3 (monitoring + drift → finetune 자동화) 으로.
 
 ---
 
 ## 9. 알려진 함정 / 다음에 또 만날 자리
 
-1. **trainer image 8.66GB** — push/pull 가 분 단위. pytorch base 가 너무 무거움. Phase 2 에서 *CPU only* base 로 교체 검토 (iris/MLP 는 CUDA 필요 없음). `pytorch/pytorch:2.3.0-cpu` 같은 게 약 1GB.
-2. **`pipelines/compile-and-register.sh` 가 깨진 상태** — venv 가정 누락 + path 불일치. 인라인으로 우회 중. Phase 2 진입 전에 정리 권장.
+1. ~~**trainer image 8.66GB**~~ → **1.81GB (e789c39)**. 해결됨.
+2. ~~**`pipelines/compile-and-register.sh` 깨짐**~~ → **idempotent rewrite (ad89b13)**. 해결됨.
 3. **AGENTS.md** — 사용자가 Codex 용으로 추가, untracked. commit 안 함 (사용자 의도 명확하지 않음).
-4. **`pipelines/components/common.py` 의 `MLFLOW_S3_ENDPOINT_URL` 추가** — ConfigMap 도 같이 update 됐는데 *kubectl 로 별도 apply*. 새 클러스터 셋업 시 setup script 가 필요. Phase 2 에서 `scripts/apply-all.sh` 정리 시 같이.
-5. **`deploy_canary` 의 jinja template 로딩** — 컴포넌트 본문이 `/templates/...` 를 가정. trainer image Dockerfile 에 `COPY serving /templates` 같은 줄 필요. 또는 컴포넌트가 template 을 *inline 으로* 가져오게 refactor (더 dumb).
+4. **ConfigMap / Secret 셋업이 ad-hoc** — `kubeflow/mlp-endpoints`, `kubeflow/mlp-s3`, `mlops/pipeline-ids` 가 kubectl 한 명령씩 직접 apply 됨. 새 클러스터 bootstrap 에는 `scripts/apply-all.sh` 또는 manifest 가 필요. Phase 2 에서 같이 정리.
+5. **`deploy_canary` 의 jinja template 로딩** — `Path("/templates/...").read_text()` 가 trainer image 안의 file 가정. Phase 2 의 §8.A.1 가 정확히 그 자리.
+6. **KFP `search_model_versions().aliases` 가 빈 list** — search API limitation. 실제 alias 는 `get_model_version_by_alias` 또는 `get_registered_model().aliases` 로 확인 (검증됨).
+7. **Disk 78%** — 정리 후도 빡빡함. *진짜 hog* 는 k3s containerd image cache (`/var/lib/rancher/k3s/...`) — `sudo crictl rmi --prune` 으로만 정리됨. Phase 2 진행 후 압박되면.
 
 ---
 
