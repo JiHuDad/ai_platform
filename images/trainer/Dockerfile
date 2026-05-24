@@ -20,10 +20,12 @@ WORKDIR /app
 COPY images/trainer/requirements.txt /app/requirements.txt
 # torch 만 CPU index 에서 받음 (CUDA wheel ~700MB 대신 CPU wheel ~200MB).
 RUN pip install --no-cache-dir --index-url https://download.pytorch.org/whl/cpu torch==2.3.0 \
-    && pip install --no-cache-dir -r /app/requirements.txt
+    && pip install --no-cache-dir -r /app/requirements.txt \
+    && pip install --no-cache-dir torch-model-archiver==0.10.0
 
-# Jinja templates 가 deploy_canary 컴포넌트 본문에서 /templates/ 경로로 로딩된다.
+# Jinja templates + torchserve handler — train_mlp/deploy_canary 가 /templates/ 에서 읽음.
 COPY serving/inferenceservice/mlp.yaml.j2     /templates/inferenceservice.yaml.j2
 COPY serving/istio/virtualservice.yaml.j2     /templates/virtualservice.yaml.j2
+COPY images/trainer/handler.py                /templates/handler.py
 
 ENV PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1

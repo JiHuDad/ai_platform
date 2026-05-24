@@ -114,4 +114,33 @@ def train_mlp(
     }
     (out / "meta.json").write_text(json.dumps(meta, indent=2))
     Path(metrics_out).write_text(json.dumps(meta))
-    print(f"[train] saved model to {out}")
+
+    # TorchServe layout — KServe 의 kserve-torchserve runtime 이 /mnt/models 에서 기대하는 구조:
+    #   /mnt/models/config/config.properties
+    #   /mnt/models/model-store/mlp.mar
+    store = out / "model-store"
+    conf = out / "config"
+    store.mkdir(exist_ok=True)
+    conf.mkdir(exist_ok=True)
+    subprocess.run([
+        "torch-model-archiver",
+        "--model-name", "mlp",
+        "--version", "1.0",
+        "--serialized-file", str(out / "model.pt"),
+        "--handler", "/templates/handler.py",
+        "--export-path", str(store),
+        "--force",
+    ], check=True)
+    (conf / "config.properties").write_text(
+        "inference_address=http://0.0.0.0:8080\n"
+        "management_address=http://0.0.0.0:8081\n"
+        "metrics_address=http://0.0.0.0:8082\n"
+        "enable_envvars_config=true\n"
+        "install_py_dep_per_model=true\n"
+        "enable_metrics_api=true\n"
+        "metrics_format=prometheus\n"
+        "NUM_WORKERS=1\n"
+        "model_store=/mnt/models/model-store\n"
+        "load_models=mlp.mar\n"
+    )
+    print(f"[train] saved model to {out}  (+ model-store/mlp.mar + config/config.properties)")
