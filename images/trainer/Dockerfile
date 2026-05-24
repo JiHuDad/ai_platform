@@ -1,6 +1,6 @@
-# 공통 trainer 베이스 이미지.
-# 모든 KFP 컴포넌트와 fine-tune Job 이 이 이미지를 사용한다.
-FROM pytorch/pytorch:2.3.0-cuda12.1-cudnn8-runtime
+# 공통 trainer 베이스 이미지 (CPU-only).
+# 모든 KFP 컴포넌트가 이걸 base 로 쓴다. iris/MLP 학습은 CUDA 불필요 — slim + cpu torch.
+FROM python:3.10-slim
 
 ARG TARGETARCH=amd64
 
@@ -12,7 +12,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /app
 COPY requirements.txt /app/requirements.txt
-RUN pip install --no-cache-dir -r /app/requirements.txt
+# torch 만 CPU index 에서 받음 (CUDA wheel ~700MB 대신 CPU wheel ~200MB).
+RUN pip install --no-cache-dir --index-url https://download.pytorch.org/whl/cpu torch==2.3.0 \
+    && pip install --no-cache-dir -r /app/requirements.txt
 
-# 파이프라인 컴포넌트 코드가 마운트되어 실행됨 (KFP 가 component spec 으로 주입).
 ENV PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1
