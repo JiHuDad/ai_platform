@@ -22,6 +22,8 @@
 | `6fb5b34` | claude permission allowlist + deny (32 allow + 19 deny) | — |
 | `3f057ca` | trainer: jinja templates baked + deploy_canary base_name fix | image 안에 /templates/ 두 파일, run-5 진전 |
 | `b12cbbd` | trainer: kubectl v1.29.0 baked (+50MB → 1.86GB) | run-6 의 deploy_canary 가 CRD 부재까지 도달 |
+| `7fd2f31` | docs: phase 2 glue green-light snapshot | — |
+| `b8a48c7` | trainer: torch-model-archiver + handler.py + permissions 확장 | image build/push OK, /templates/handler.py 적재 확인, archive 도구 동작. run-8 검증은 다음 세션. |
 
 ---
 
@@ -97,8 +99,9 @@ kubectl -n kubeflow port-forward svc/ml-pipeline 8888:8888 >/tmp/kfp-pf.log 2>&1
 
 ## 6. 이 세션이 *안* 한 것
 
-- 모델 packaging (`.mar`) — predictor pod 의 진짜 Ready 까지는 별도 sub-step
-- `mlp v2` 를 production alias 로 이동 — 지금 staging. finetune_pipeline 의 dry-run 위해서 production 필요
+- **run-8 (predictor Ready 검증)** — image 준비 끝, KFP run 미실행. *다음 세션 첫 작업*.
+- **curl predict 검증** — predictor 가 Ready 후
+- `mlp v2/v3` 를 production alias 로 이동 — 지금 staging
 - Phase 3 (Prometheus + Evidently + ml-webhook + drift 자동 finetune)
 - `evidently-job`, `ml-webhook`, `promote/rollback` Job 이미지 빌드
 - `pipelines/finetune_pipeline` 의 실제 run 검증 (compile 만)

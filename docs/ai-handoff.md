@@ -7,13 +7,19 @@
 
 ---
 
-## 0. 한 줄 상태 (2026-05-24 16:35 KST)
+## 0. 한 줄 상태 (2026-05-25 직전 — KST 야간)
 
-**Phase 1: ✅ GREEN-LIGHT.** train_pipeline KFP 통과, MLflow 에 `mlp v1, v2` (둘 다 5종 lineage 태그 miss=OK, staging alias=v2), MinIO 에 model artifact 적재.
+**Phase 1: ✅ GREEN-LIGHT.** mlp v1, v2 등록, staging alias=v2.
 
-**Phase 2 (serving glue): ✅ GREEN-LIGHT.** run-7 의 **전체 KFP pipeline (data_ingest → register_to_mlflow → deploy_canary) 가 SUCCEEDED**. InferenceService `mlp-canary` + VirtualService `mlp` 가 serving ns 에 생성됨. MinIO 의 `serving-manifests/mlp/<ts>/` 에 yaml snapshot 적재. KServe storage-initializer 가 라파 MinIO 에서 model artifact pull 성공.
+**Phase 2 (serving glue): ✅ GREEN-LIGHT.** run-7 의 deploy_canary 통과, InferenceService + VirtualService 생성, MinIO snapshot 적재.
 
-**Phase 2 의 마지막 자리 (모델 packaging) 만 미해결**: torchserve runtime 이 `.mar` archive + `config.properties` 를 기대. 우리 mlflow 아티팩트 (`state_dict.pt` + scripted `model.pt`) 는 그 형식 아님 → predictor pod CrashLoopBackOff. 별도 sub-step (§8 참조).
+**Phase 2.5 (모델 packaging): ⏳ image 준비됨, run 검증 미완.**
+- `handler.py` 신규 (KFServing v1 format)
+- Dockerfile: `torch-model-archiver==0.10.0` pip install + handler.py 를 `/templates/` 에 COPY
+- `train_mlp.py`: archive (`model-store/mlp.mar`) + `config/config.properties` 생성. KServe torchserve runtime layout 정확 매치.
+- trainer image `b8a48c7` 빌드/push 완료. 검증: `/templates/handler.py` 적재 ✓, `torch-model-archiver --version` 동작 ✓.
+
+**다음 세션 첫 작업**: train_pipeline 재실행 (run-8) → mlp v3 등록 → predictor pod 의 `kserve-container` Ready → `curl /v1/models/mlp:predict` 200 검증.
 
 ---
 
@@ -44,6 +50,8 @@
 ## 2. Commit history (이 세션들)
 
 ```
+b8a48c7 feat(trainer): torch-model-archiver + handler.py for KServe torchserve runtime
+7fd2f31 docs: phase 2 glue green-light snapshot — 모델 packaging 만 남음
 b12cbbd feat(trainer): bake kubectl v1.29.0 into image
 3f057ca feat(trainer): bake jinja templates into image + fix deploy_canary base_name
 6fb5b34 chore(claude): permission allowlist + deny — '삭제 빼고 자유롭게' 실현
@@ -83,8 +91,8 @@ d48ab48 chore: initialize repo
 - KFP 의 `mlp-train`, `mlp-finetune` 두 파이프라인 업로드됨
 
 ### leaf007 trainer image
-- `kfp-registry:5000/mlplatform/trainer:b12cbbd` / `:latest` — **1.86GB**, python:3.10-slim + CPU torch + 11 패키지 + `/templates/` (jinja) + `/usr/local/bin/kubectl` v1.29.0
-- 이전 tag 들 (cpu, cpu-tpl, 3f057ca, 6fb5b34 등) registry 에 잔존
+- `kfp-registry:5000/mlplatform/trainer:b8a48c7` / `:latest` / `:mar` — **1.86GB**, python:3.10-slim + CPU torch + 11 패키지 + `/templates/{handler.py, jinja}` + `/usr/local/bin/kubectl` v1.29.0 + `torch-model-archiver` 0.10.0
+- 이전 tag 들 registry 에 잔존
 
 ---
 
@@ -175,52 +183,46 @@ python -c "import kfp; print(kfp.__version__)"   # 2.16.1
 
 ---
 
-## 8. 다음 작업 (모델 packaging — Phase 2 의 마지막 sub-step)
+## 8. 다음 세션 첫 작업 — Phase 2.5 검증 (run-8)
 
-Phase 2 의 §A.1~A.6 (인프라 설치 + glue) 는 *전부 완료*. 마지막 자리는 **모델 packaging**: torchserve 가 `.mar` archive + `config.properties` 를 기대하는데 우리는 raw state_dict + scripted .pt 만.
+Image 준비 완료 (`b8a48c7`). 다음 세션:
 
-### B.1 옵션 — torch-model-archiver 로 `.mar` 생성 (가장 정직)
+```bash
+# 1) wake-up (§7)
+# 2) train_pipeline 재실행 — 새 image 가 .mar + config.properties 생성
+.venv/bin/python - <<'PY'
+from kfp.client import Client
+c = Client(host="http://localhost:8888")
+run = c.create_run_from_pipeline_package(
+    pipeline_file="pipelines/train_pipeline.yaml",
+    arguments={
+        "dataset_uri": "s3://datasets/demo/iris/20260523-v1/",
+        "model_name": "mlp", "epochs": 5, "baseline_accuracy": 0.0,
+        "git_sha": "p2.5-mar", "triggered_by": "manual",
+    },
+    experiment_name="smoke", run_name="train-smoke-8-mar",
+)
+print("RUN_ID:", run.run_id)
+PY
 
-`train_mlp.py` 의 출력 디렉토리에 `.mar` 도 같이 저장:
-
-```python
-# train_mlp.py 끝에 추가
-import subprocess
-subprocess.run([
-    "torch-model-archiver",
-    "--model-name", "mlp",
-    "--version", "1.0",
-    "--serialized-file", str(out / "state_dict.pt"),
-    "--model-file", str(out / "model_def.py"),   # MLP class 정의 — 새 파일 필요
-    "--handler", "image_classifier",             # 또는 custom_handler.py
-    "--export-path", str(out),
-    "--force",
-], check=True)
+# 3) run 끝나면 mlflow v3 등록 + .mar artifact 포함 확인
+# 4) deploy_canary 가 mlp v3 의 새 storageUri 로 InferenceService update
+# 5) predictor pod 의 kserve-container 가 .mar 로드 → Ready
+# 6) curl 검증
+curl -s -H 'Content-Type: application/json' \
+  -d '{"instances":[[5.1,3.5,1.4,0.2]]}' \
+  http://mlp.mlplatform.local/v1/models/mlp:predict
+# → {"predictions":[0]} 이면 Phase 2 의 *진짜* 완전 green-light.
 ```
 
-또한 `config.properties` 파일도 같이 생성:
-```
-inference_address=http://0.0.0.0:8080
-management_address=http://0.0.0.0:8081
-model_store=/mnt/models
-load_models=mlp.mar
-```
+### 가능한 추가 fix 자리 (run-8 결과 따라)
 
-trainer image 에 `torch-model-archiver` 추가 필요 (`pip install torch-model-archiver`).
-
-검증: predictor pod 의 `kserve-container` 가 Running, `mlp-canary` InferenceService URL 이 Ready=True.
-
-### B.2 옵션 — InferenceService 의 runtime 변경
-
-`mlp.yaml.j2` 의 `runtime: kserve-torchserve` → `kserve-mlserver` 또는 *custom python* 으로. mlserver-pytorch 가 `state_dict.pt` 직접 사용 가능한지 검토. 또는 *custom predictor container* (FastAPI 작성).
-
-### B.3 옵션 — *지금 동작 그대로 Phase 3 진입*
-
-Phase 2 의 glue 진실 (`deploy_canary` 통과, InferenceService 등록) 는 검증됨. predictor pod 의 Ready 는 *Phase 3 의 drift→finetune 루프 검증* 에는 영향 없음 (단 *실제 serving 호출* 은 안 됨). serving 호출 검증을 *별도 phase 2.5* 로 분리.
-
-### 권장 순서: B.1
-
-가장 정직한 path. mlflow 의 *모델 artifact 구조* 가 KServe + torchserve 의 *기대 구조* 와 맞추는 게 lineage 통일성 측면에서 옳다. handler 파일 한 개 + Dockerfile 한 줄 추가면 끝.
+| 자리 | 가능성 | 대응 |
+|---|---|---|
+| handler.py 의 KFServing v1 parsing | input 형식 미묘 차이 (KServe v1 vs v2) | preprocess() 의 dict 키 추가 매칭 |
+| `model.pt` (TorchScript) vs torch-model-archiver 의 기대 | --serialized-file 가 state_dict 가 아닌 *full scripted* 이라 OK 일 텐데 KServe storage-initializer 가 어디서 어떻게 mount 하는지 |  pod describe + ls /mnt/models 로 layout 진단 |
+| storage-initializer 가 *model-store/* 와 *config/* 디렉토리 둘 다 mount | 우리가 mlflow artifact 의 root 를 `/mnt/models` 로 가정. 실제 mlflow log_artifacts 의 path 가 그렇게 옮길지 | 첫 실패 시 KServe storage-initializer logs + mlflow artifact tree 확인 |
+| mlp.mar 가 너무 작아서 torchserve 가 거부 | 가능성 낮음 (iris MLP 충분히 표현) | logs 보고 |
 
 ---
 
