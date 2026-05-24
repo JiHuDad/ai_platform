@@ -12,7 +12,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       curl ca-certificates git \
     && rm -rf /var/lib/apt/lists/* \
     && curl -fsSL "https://dl.min.io/client/mc/release/linux-${TARGETARCH}/mc" -o /usr/local/bin/mc \
-    && chmod +x /usr/local/bin/mc
+    && chmod +x /usr/local/bin/mc \
+    && curl -fsSL "https://dl.k8s.io/release/v1.29.0/bin/linux/${TARGETARCH}/kubectl" -o /usr/local/bin/kubectl \
+    && chmod +x /usr/local/bin/kubectl
 
 WORKDIR /app
 COPY images/trainer/requirements.txt /app/requirements.txt
