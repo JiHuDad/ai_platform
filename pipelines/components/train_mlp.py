@@ -131,10 +131,20 @@ def train_mlp(
         "--export-path", str(store),
         "--force",
     ], check=True)
+    # KServe wrapper (parse_config) 가 model_snapshot JSON 을 요구 — 없으면 KeyError.
+    snapshot = (
+        '{"name":"startup.cfg","modelCount":1,"models":{"mlp":{"1.0":{'
+        '"defaultVersion":true,"marName":"mlp.mar",'
+        '"minWorkers":1,"maxWorkers":1,'
+        '"batchSize":1,"maxBatchDelay":100,"responseTimeout":120}}}}'
+    )
+    # TorchServe 는 7080-7082, KServe wrapper 는 8080/8081 — 안 겹쳐야 wrapper 가 자기 server 띄움.
     (conf / "config.properties").write_text(
-        "inference_address=http://0.0.0.0:8080\n"
-        "management_address=http://0.0.0.0:8081\n"
-        "metrics_address=http://0.0.0.0:8082\n"
+        "inference_address=http://0.0.0.0:7080\n"
+        "management_address=http://0.0.0.0:7081\n"
+        "metrics_address=http://0.0.0.0:7082\n"
+        "grpc_inference_port=7070\n"
+        "grpc_management_port=7071\n"
         "enable_envvars_config=true\n"
         "install_py_dep_per_model=true\n"
         "enable_metrics_api=true\n"
@@ -142,5 +152,6 @@ def train_mlp(
         "NUM_WORKERS=1\n"
         "model_store=/mnt/models/model-store\n"
         "load_models=mlp.mar\n"
+        f"model_snapshot={snapshot}\n"
     )
     print(f"[train] saved model to {out}  (+ model-store/mlp.mar + config/config.properties)")
