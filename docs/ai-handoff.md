@@ -1,352 +1,361 @@
-# AI Handoff — `ai_platform`
+# AI Handoff — ai_platform
 
-> 진행은 Karpathy 헌장 (CLAUDE.md) 을 따른다. 이 문서는 두 가지 모드:
-> 1. **재개 노트**: 같은 사용자가 다른 세션에서 이어할 때 첫 명령까지.
-> 2. **인계서**: 컨텍스트 없는 새 에이전트가 cold start.
-> 둘 다 *git log* + *이 문서* + *`docs/claude-last-diff-summary.md`* 만 보면 충분해야 한다.
+Snapshot: 2026-05-25 12:03:20 KST
 
----
+This handoff is for a fresh coding agent. Read this file, `docs/claude-last-diff-summary.md`, `AGENTS.md`, `CLAUDE.md`, and `git diff` before editing.
 
-## 0. 한 줄 상태 (2026-05-25 직전 — KST 야간)
+## Objective
 
-**Phase 1: ✅ GREEN-LIGHT.** mlp v1, v2 등록, staging alias=v2.
+Finish Phase 2.5: make the deployed `mlp` KServe/TorchServe predictor return a real HTTP 200 prediction, then move to Phase 3 only after that.
 
-**Phase 2 (serving glue): ✅ GREEN-LIGHT.** run-7 의 deploy_canary 통과, InferenceService + VirtualService 생성, MinIO snapshot 적재.
+The platform plumbing is mostly green:
 
-**Phase 2.5 (모델 packaging): ⏳ image 준비됨, run 검증 미완.**
-- `handler.py` 신규 (KFServing v1 format)
-- Dockerfile: `torch-model-archiver==0.10.0` pip install + handler.py 를 `/templates/` 에 COPY
-- `train_mlp.py`: archive (`model-store/mlp.mar`) + `config/config.properties` 생성. KServe torchserve runtime layout 정확 매치.
-- trainer image `b8a48c7` 빌드/push 완료. 검증: `/templates/handler.py` 적재 ✓, `torch-model-archiver --version` 동작 ✓.
+- KFP trains and registers `mlp`.
+- MLflow/MinIO artifacts exist on the Pi4.
+- KServe `InferenceService` now becomes `READY=True`.
+- The remaining red line is actual inference: request routing and handler input parsing still fail.
 
-**다음 세션 첫 작업**: train_pipeline 재실행 (run-8) → mlp v3 등록 → predictor pod 의 `kserve-container` Ready → `curl /v1/models/mlp:predict` 200 검증.
+## Current State
 
----
+Repository: `/home/fall/dev/ai_platform` on `fall@192.168.1.154`.
 
-## 1. Environment topology
-
-| Host | Role | 컴포넌트 |
-|---|---|---|
-| `leaf007` (amd64, 12C/16GB, 192.168.1.154) | k3s control + compute + dev workstation | k3s v1.29, KFP (`kubeflow` ns), `kfp-registry` (docker registry:2 on host) |
-| `finux4` / Pi4 8GB (aarch64, 192.168.1.37) | Control-plane storage & tracking | Debian 13, Docker 26.1, MinIO `:9000/:9001`, **MLflow `:5001`**, registry `:5000`, 외장 Samsung SSD 870 EVO 233GB @ `/mnt/data` |
-
-**도달성 검증값**: leaf007 ↔ Pi4 12~13ms. k3s pod 도 OK (busybox `wget` 검증).
-
-**Registry resolution (sudo 로 1회 설정 완료)**:
-- `/etc/hosts`: `127.0.0.1 kfp-registry`
-- `/etc/rancher/k3s/registries.yaml`: `kfp-registry:5000` 을 insecure HTTP mirror
-- `/etc/docker/daemon.json`: `insecure-registries: ["kfp-registry:5000"]`
-- k3s + docker 재시작 완료.
-
-**MinIO 자격 (라파)**: `admin` / `ChangeMe!2026`. env 의 `_FILE` 변수들은 파일 없어서 plain env fallback.
-
-**버킷 (라파 MinIO)**:
-- `mlflow-artifacts/` ← MLflow artifact root, model 산출물 적재됨
-- `datasets/demo/iris/20260523-v1/iris.csv` ← Phase 1 fixture
-- `tmp/` ← 무관, 2024 잔재
-
----
-
-## 2. Commit history (이 세션들)
-
-```
-b8a48c7 feat(trainer): torch-model-archiver + handler.py for KServe torchserve runtime
-7fd2f31 docs: phase 2 glue green-light snapshot — 모델 packaging 만 남음
-b12cbbd feat(trainer): bake kubectl v1.29.0 into image
-3f057ca feat(trainer): bake jinja templates into image + fix deploy_canary base_name
-6fb5b34 chore(claude): permission allowlist + deny — '삭제 빼고 자유롭게' 실현
-a3c3987 docs: snapshot before Phase 2 — Phase 1 정리 + image diet 반영
-e789c39 feat(trainer): CPU-only base — 8.66GB → 1.81GB (5×↓)
-ad89b13 fix(scripts): compile-and-register 를 idempotent + venv-aware 로 다시 짬
-f436289 docs: phase 1 green-light snapshot + session resume notes
-247a9bb fix(env): inject MLFLOW_S3_ENDPOINT_URL so mlflow client points at Pi4 MinIO
-d5da6ac fix(preprocess): np.savez_compressed → .npz auto-suffix 깨짐, file handle 로 우회
-7bf308c chore(gitignore): exclude compile artifacts + generated fixture
-54f66e0 fix(trainer): drop kfp from runtime requirements — resolves kubernetes conflict
-23bf842 feat: inject MLflow/MinIO env into every KFP task via kfp-kubernetes
-3c6df20 docs: ai-handoff + last-diff-summary for next agent (snapshot)
-026f8ad fix: dead code, deprecated APIs, registry hostname, finetune type bug
-a28091e docs: add CLAUDE.md — Karpathy-style working agreement
-ad6907e feat: scaffold MLP MLOps platform end-to-end
-d48ab48 chore: initialize repo
-```
-
-매 commit body 에 *진실 검증* 증거 (compile 통과 / pod completed / MLflow 등록 / MinIO artifact / image size / InferenceService Ready 상태 등).
-
----
-
-## 3. Out-of-tree state (Pi4 + k3s)
-
-### Pi4 컨테이너
-| 이름 | 이미지 | 상태 | 의미 |
-|---|---|---|---|
-| `minio` | quay.io/minio/minio:latest | Up 10d+ | 라파 S3 |
-| `registry` | registry:2 | Up 10d+ | (Phase 1 미사용 — leaf007 `kfp-registry` 가 KFP image source) |
-| `mlflow` | ghcr.io/mlflow/mlflow:v2.16.2 | Up ~1h | tracking + artifact proxy |
-
-### k3s 리소스
-- `kubeflow/mlp-endpoints` ConfigMap — `MLFLOW_TRACKING_URI`, `MINIO_ENDPOINT`, `MLFLOW_S3_ENDPOINT_URL`
-- `kubeflow/mlp-s3` Secret — `AWS_ACCESS_KEY_ID/SECRET`, `MINIO_ACCESS_KEY/SECRET`
-- `mlops` namespace — `pipeline-ids` ConfigMap (`train=3732a01c-...`, `finetune=68d663f3-...`)
-- KFP 의 `mlp-train`, `mlp-finetune` 두 파이프라인 업로드됨
-
-### leaf007 trainer image
-- `kfp-registry:5000/mlplatform/trainer:b8a48c7` / `:latest` / `:mar` — **1.86GB**, python:3.10-slim + CPU torch + 11 패키지 + `/templates/{handler.py, jinja}` + `/usr/local/bin/kubectl` v1.29.0 + `torch-model-archiver` 0.10.0
-- 이전 tag 들 registry 에 잔존
-
----
-
-## 4. Phase 1 의 진실 (그린라이트 증거)
-
-두 번의 green-light run:
-- **run-3** `fc33eb8a-...`: 첫 green-light. → mlp v1 등록.
-- **run-4** `c71fc385-...`: image diet 후 동일 결과 재현. → mlp v2 등록.
-
-```
-KFP DAG: data_ingest → preprocess → train_mlp → evaluate → register_to_mlflow → [deploy_canary FAIL — 예상]
-              Completed   Completed   Completed   Completed       Completed
-
-MLflow registry (서버 측 진리):
-  registered_model: mlp
-  aliases: {'staging': '2'}            # search_model_versions 의 mv.aliases 는 빈 list — search API limitation 확인됨
-  v2  git_sha=smoke-cpu-image           kfp_run_id=train-smoke-4-cpu
-  v1  git_sha=smoke-mlflow-s3-fix       kfp_run_id=train-smoke-3
-  둘 다 같은 dataset_hash=39706f147590c33e..., 5종 lineage 태그 miss=OK
-
-MinIO artifact (라파, 각 버전 마다):
-  mlflow-artifacts/0/<run_uuid>/artifacts/model/meta.json       (197B)
-  mlflow-artifacts/0/<run_uuid>/artifacts/model/model.pt        (46KiB, TorchScript)
-  mlflow-artifacts/0/<run_uuid>/artifacts/model/state_dict.pt   (38KiB)
-```
-
----
-
-## 5. 발견된 진짜 버그 — 전부 commit 됨
-
-| ID | 파일 | 증상 | Fix | 검증 |
-|---|---|---|---|---|
-| **C1** | `pipelines/components/pull_production_model.py` | `production_accuracy_out: OutputPath("String")` 이 소비자(`evaluate.baseline_accuracy: float`) 와 KFP 타입 불일치. compile 시 `InconsistentTypeException`. | NamedTuple 리턴으로 refactor (float 스칼라 + str). 호출부 `_out` suffix 제거. | compile OK 양쪽 파이프라인 (`026f8ad`) |
-| **C2** | `pipelines/components/preprocess.py` | `np.savez_compressed(str_path, ...)` 가 `.npz` suffix 를 자동 추가 → KFP OutputPath (suffix 없음) 와 path 불일치 → train_mlp 가 `FileNotFoundError`. | `with open(path, "wb") as f: np.savez_compressed(f, ...)` — file handle 은 auto-suffix 안 붙음. | run-2 (3b5f00b5) 의 preprocess + train_mlp + evaluate 통과 (`d5da6ac`) |
-| **C3** | `pipelines/components/common.py` + ConfigMap | mlflow client (boto3) 가 `MLFLOW_S3_ENDPOINT_URL` env 없으면 실제 AWS S3 로 가서 admin 자격 거부 → register_to_mlflow 가 `InvalidAccessKeyId`. | attach_platform_env 에 `MLFLOW_S3_ENDPOINT_URL` 추가, mlp-endpoints ConfigMap 에도 같은 키. | run-3 (fc33eb8a) register 통과 + MLflow v1 + MinIO artifact (`247a9bb`) |
-| **C4** | `pipelines/components/deploy_canary.py` | jinja render 에 `base_name` 누락 → `mlp.yaml.j2` 의 `labels.app: {{ base_name }}` 가 Undefined → 빈 라벨 yaml → kubectl apply 거부. | `base_name=model_name` 인자 추가. | run-7 (b1632e43) 의 deploy_canary 통과 (`3f057ca`) |
-| **C5** | `images/trainer/Dockerfile` (templates 부재) | deploy_canary 본문이 `/templates/*.yaml.j2` 를 read — image 에 없음. | build context 를 repo root 로 + `COPY serving/.../yaml.j2 /templates/` 두 줄. | run-7 에서 templates 로딩 통과 (`3f057ca`) |
-| **C6** | `images/trainer/Dockerfile` (kubectl 부재) | deploy_canary 본문이 `subprocess.run(["kubectl", ...])` 호출 — slim base 에 kubectl 없음. | curl 로 kubectl v1.29.0 다운로드 + chmod. | run-6 에서 kubectl 동작 → CRD 부재 신호 (`b12cbbd`) |
-
----
-
-## 6. ~~Failing (의도된)~~ → 해결됨
-
-이전 핸드오프의 *deploy_canary 의 의도된 실패* (templates 부재 + KServe 부재) 가 **모두 해결**:
-1. ✅ Templates image 안에 baked (C5, `3f057ca`)
-2. ✅ base_name jinja Undefined (C4, `3f057ca`)
-3. ✅ kubectl 바이너리 baked (C6, `b12cbbd`)
-4. ✅ KServe + Istio + cert-manager 클러스터에 설치 (§9 참조)
-5. ✅ serving ns + kserve-s3 SA + Pi4 자격 secret + HTTP gateway + RBAC (§10 참조)
-6. ✅ `pipeline-runner` SA 에 serving ns 권한 (rolebinding `kfp-serving-deployer-default`)
-7. ✅ serving-manifests bucket on 라파 MinIO
-
-**Phase 2 의 진짜 미해결 자리는 모델 packaging** (§8 B.1 참조) — torchserve runtime 이 `.mar` archive 를 기대하는데 우리 mlflow artifact 는 raw state_dict + scripted .pt.
-
----
-
-## 7. 내일/다음 세션 재개 — 첫 5분
-
-### 7.1 환경 wake-up
-```bash
-cd /home/fall/dev/ai_platform
-git status                           # clean 이어야 (commit 247a9bb 까지)
-git log --oneline -5
-
-# k3s 살아있는지
-kubectl get nodes
-
-# Pi4 컨테이너 살아있는지 (셋 다 Up X days)
-ssh fall@192.168.1.37 'docker ps --format "table {{.Names}}\t{{.Status}}"'
-
-# leaf007 → Pi4 도달
-curl -s -o /dev/null -w "MinIO:%{http_code} " http://192.168.1.37:9000/minio/health/live
-curl -s -o /dev/null -w "MLflow:%{http_code}\n" http://192.168.1.37:5001/health
-```
-
-### 7.2 KFP API 접근 (port-forward 재기동)
-이전 세션의 port-forward 는 종료됨 (background process 가 셸 종료시 함께).
-```bash
-kubectl -n kubeflow port-forward svc/ml-pipeline 8888:8888 >/tmp/kfp-pf.log 2>&1 &
-sleep 3 && curl -s http://localhost:8888/apis/v2beta1/pipelines | head -c 200
-```
-
-### 7.3 venv 활성화 (이 머신)
-```bash
-source .venv/bin/activate
-python -c "import kfp; print(kfp.__version__)"   # 2.16.1
-```
-
----
-
-## 8. 다음 세션 첫 작업 — Phase 2.5 검증 (run-8)
-
-Image 준비 완료 (`b8a48c7`). 다음 세션:
+Git:
 
 ```bash
-# 1) wake-up (§7)
-# 2) train_pipeline 재실행 — 새 image 가 .mar + config.properties 생성
-.venv/bin/python - <<'PY'
-from kfp.client import Client
-c = Client(host="http://localhost:8888")
-run = c.create_run_from_pipeline_package(
-    pipeline_file="pipelines/train_pipeline.yaml",
-    arguments={
-        "dataset_uri": "s3://datasets/demo/iris/20260523-v1/",
-        "model_name": "mlp", "epochs": 5, "baseline_accuracy": 0.0,
-        "git_sha": "p2.5-mar", "triggered_by": "manual",
-    },
-    experiment_name="smoke", run_name="train-smoke-8-mar",
-)
-print("RUN_ID:", run.run_id)
-PY
+git status --short --branch
+```
 
-# 3) run 끝나면 mlflow v3 등록 + .mar artifact 포함 확인
-# 4) deploy_canary 가 mlp v3 의 새 storageUri 로 InferenceService update
-# 5) predictor pod 의 kserve-container 가 .mar 로드 → Ready
-# 6) curl 검증
-curl -s -H 'Content-Type: application/json' \
+Current result:
+
+```text
+## main...origin/main [ahead 1]
+ M serving/inferenceservice/mlp.yaml.j2
+?? AGENTS.md
+```
+
+Latest commit:
+
+```text
+df455a7 feat: TorchServe config.properties 정합 — predictor pod 진짜 Ready
+```
+
+`origin/main` is still at:
+
+```text
+205f55a docs: phase 2.5 image 준비 — run-8 검증을 다음 세션 첫 작업으로
+```
+
+Cluster:
+
+```text
+leaf007 Ready, k3s v1.29.14+k3s1
+serving/mlp-canary InferenceService READY=True
+serving/mlp-canary pods: 2/2 Running x2
+```
+
+Current KServe truth:
+
+```text
+isvc=mlp-canary
+ready=True
+revision=mlp-v10
+storage=s3://mlflow-artifacts/0/b2f4e2e3f7e942cda5cc5c2424fe9b1d/artifacts/model
+protocol=v2
+```
+
+Current MLflow truth:
+
+```text
+registered model: mlp
+aliases: {'staging': '10'}
+v9  run=b996dd6dfe794847a345efeeeab629d2  test_accuracy=0.782608695652174  git_sha=p2.5-ports
+v10 run=b2f4e2e3f7e942cda5cc5c2424fe9b1d  test_accuracy=0.782608695652174  git_sha=p2.5-v2protocol
+dataset_uri=s3://datasets/demo/iris/20260523-v1/
+dataset_hash=39706f147590c33e41c0a38a1defc91020d1bca81ca67f3c375fc04e0d0554cf
+```
+
+Pi4 state (`fall@192.168.1.37`):
+
+```text
+minio    Up 12 days   0.0.0.0:9000-9001->9000-9001
+registry Up 12 days   0.0.0.0:5000->5000
+mlflow   Up 39 hours  0.0.0.0:5001->5000
+```
+
+## Files Changed
+
+Committed in `df455a7`:
+
+- `pipelines/components/train_mlp.py`
+  - Builds TorchServe layout under the MLflow model artifact:
+    - `model-store/mlp.mar`
+    - `config/config.properties`
+  - Moves TorchServe internal REST ports to `7080/7081/7082`.
+  - Keeps KServe wrapper free to bind `8080/8081`.
+  - Adds `model_snapshot`, `load_models=mlp.mar`, gRPC ports, metrics config.
+- `scripts/submit-run.py`
+  - Repeatable KFP run submitter.
+  - Defaults to Iris demo data and `mlp`.
+
+Uncommitted at handoff:
+
+- `serving/inferenceservice/mlp.yaml.j2`
+  - Adds:
+    ```yaml
+    protocolVersion: {{ protocol_version | default('v2') }}
+    ```
+  - This is required for the current `mlp-v10` serving shape.
+- `AGENTS.md`
+  - Tells Codex to read `CLAUDE.md`.
+  - Allows optional `local-llama-sidekick` use for small advisory checks only.
+- `docs/ai-handoff.md`
+- `docs/claude-last-diff-summary.md`
+
+## Decisions
+
+- Keep using the demo `mlp` + Iris dataset until the full platform loop is green. This is not a production model choice; it is the fast sanity fixture.
+- Use KServe `protocolVersion: v2` for TorchServe runtime compatibility.
+- Run TorchServe on `7080/7081/7082`, not `8080/8081`, because the KServe wrapper owns the wrapper server ports.
+- Keep `.mar` packaging in `train_mlp.py` for now. It is simple and matches the current "one dumb thing that works" style.
+- Use `scripts/submit-run.py` instead of ad hoc heredoc KFP submissions.
+- Do not start Phase 3 until `curl`/internal predict returns HTTP 200 with a prediction body.
+
+## Current Bugs
+
+### B1. Handler does not parse KServe v2/OIP input
+
+The model loads and metadata works, but inference fails.
+
+Working:
+
+```bash
+kubectl -n serving exec deploy/mlp-canary-predictor -c kserve-container -- \
+  python -c 'import urllib.request; r=urllib.request.urlopen("http://127.0.0.1:8080/v2/models/mlp", timeout=10); print(r.status); print(r.read().decode())'
+```
+
+Observed:
+
+```text
+200
+{"name":"mlp","versions":null,"platform":"","inputs":[],"outputs":[]}
+```
+
+Failing:
+
+```bash
+kubectl -n serving exec deploy/mlp-canary-predictor -c kserve-container -- \
+  python -c 'import json,urllib.request; payload=json.dumps({"inputs":[{"name":"input-0","shape":[1,4],"datatype":"FP32","data":[[5.1,3.5,1.4,0.2]]}]}).encode(); req=urllib.request.Request("http://127.0.0.1:8080/v2/models/mlp/infer", data=payload, headers={"Content-Type":"application/json"}); r=urllib.request.urlopen(req, timeout=10); print(r.status); print(r.read().decode())'
+```
+
+Observed:
+
+```text
+HTTP Error 500: Internal Server Error
+```
+
+Important log:
+
+```text
+File "/home/model-server/tmp/models/.../handler.py", line 25, in preprocess
+  instances = body.get("instances") or body.get("inputs") or body
+AttributeError: 'list' object has no attribute 'get'
+```
+
+Likely fix: update `images/trainer/handler.py` so `preprocess()` accepts:
+
+- KServe v1: `{"instances": [[...]]}`
+- KServe v2/OIP: `{"inputs": [{"name": "...", "shape": [N, D], "datatype": "FP32", "data": [...]}]}`
+- TorchServe envelopes where the body may already be a `list`
+
+### B2. VirtualService routes 90% to a missing stable service
+
+Current `serving/istio/virtualservice.yaml.j2` renders both routes:
+
+```text
+mlp-stable-predictor.serving.svc.cluster.local weight=90
+mlp-canary-predictor.serving.svc.cluster.local weight=10
+```
+
+But there is no `mlp-stable-predictor` service in `serving`.
+
+Failing command:
+
+```bash
+curl -s -i \
+  -H 'Host: mlp.mlplatform.local' \
+  -H 'Content-Type: application/json' \
+  -d '{"inputs":[{"name":"input-0","shape":[1,4],"datatype":"FP32","data":[[5.1,3.5,1.4,0.2]]}]}' \
+  http://192.168.1.154/v2/models/mlp/infer
+```
+
+Observed:
+
+```text
+HTTP/1.1 503 Service Unavailable
+```
+
+Likely fix: in `pipelines/components/deploy_canary.py`, when no stable service exists, render `stable_weight=0`, `canary_weight=100`, or render only the canary route. The code already detects no stable later while snapshotting; do the stable existence check before rendering the VirtualService.
+
+### B3. `inference-logger` is referenced but not deployed
+
+`InferenceService` includes:
+
+```yaml
+logger:
+  mode: all
+  url: http://inference-logger.serving.svc/log/mlp/canary
+```
+
+But:
+
+```bash
+kubectl -n serving get svc inference-logger
+kubectl -n serving get deploy inference-logger
+```
+
+Both return `NotFound`.
+
+This has not blocked readiness, but after prediction works it may surface as logging noise or failed async delivery. Either deploy `serving/inference-logger.yaml` as part of Phase 3 or remove/guard the logger block until that component exists.
+
+## Failing Commands
+
+Gateway v1 request:
+
+```bash
+curl -s -i \
+  -H 'Host: mlp.mlplatform.local' \
+  -H 'Content-Type: application/json' \
   -d '{"instances":[[5.1,3.5,1.4,0.2]]}' \
-  http://mlp.mlplatform.local/v1/models/mlp:predict
-# → {"predictions":[0]} 이면 Phase 2 의 *진짜* 완전 green-light.
+  http://192.168.1.154/v1/models/mlp:predict
 ```
 
-### 가능한 추가 fix 자리 (run-8 결과 따라)
+Observed:
 
-| 자리 | 가능성 | 대응 |
-|---|---|---|
-| handler.py 의 KFServing v1 parsing | input 형식 미묘 차이 (KServe v1 vs v2) | preprocess() 의 dict 키 추가 매칭 |
-| `model.pt` (TorchScript) vs torch-model-archiver 의 기대 | --serialized-file 가 state_dict 가 아닌 *full scripted* 이라 OK 일 텐데 KServe storage-initializer 가 어디서 어떻게 mount 하는지 |  pod describe + ls /mnt/models 로 layout 진단 |
-| storage-initializer 가 *model-store/* 와 *config/* 디렉토리 둘 다 mount | 우리가 mlflow artifact 의 root 를 `/mnt/models` 로 가정. 실제 mlflow log_artifacts 의 path 가 그렇게 옮길지 | 첫 실패 시 KServe storage-initializer logs + mlflow artifact tree 확인 |
-| mlp.mar 가 너무 작아서 torchserve 가 거부 | 가능성 낮음 (iris MLP 충분히 표현) | logs 보고 |
+```text
+HTTP/1.1 503 Service Unavailable
+```
 
----
-
-## 9. Phase 2 의 클러스터 install 명령 (재현용)
-
-다음 세션 시작 시 *cluster 가 살아있으면* 이 명령들 재실행 필요 없음. *새 클러스터* 면 순서대로:
+Gateway v2 request:
 
 ```bash
-# 1) cert-manager (Prometheus servicemonitor 비활성화 — Phase 3 영역)
-helm repo add jetstack https://charts.jetstack.io
-helm upgrade --install cert-manager jetstack/cert-manager \
-  -n cert-manager --create-namespace --version v1.14.5 \
-  -f bootstrap/platform/02-cert-manager-values.yaml \
-  --set prometheus.servicemonitor.enabled=false \
-  --wait --timeout 5m
-
-# 2) Istio (autoscale 1~2 로 줄임, LB IP 자동)
-helm repo add istio https://istio-release.storage.googleapis.com/charts
-helm upgrade --install istio-base istio/base -n istio-system --create-namespace \
-  -f bootstrap/platform/03-istio-base-values.yaml --wait
-helm upgrade --install istiod istio/istiod -n istio-system \
-  -f bootstrap/platform/03-istiod-values.yaml \
-  --set pilot.autoscaleMin=1 --set pilot.autoscaleMax=2 --wait
-helm upgrade --install istio-ingressgateway istio/gateway -n istio-system \
-  -f bootstrap/platform/03-istio-gateway-values.yaml \
-  --set service.loadBalancerIP="" \
-  --set autoscaling.minReplicas=1 --set autoscaling.maxReplicas=2 --wait
-
-# 3) KServe — manifest 방식 (OCI helm chart 가 ghcr 에서 download 실패)
-kubectl apply -f https://github.com/kserve/kserve/releases/download/v0.13.0/kserve.yaml
-# kube-rbac-proxy image 가 gcr 에서 not found — quay 로 patch
-kubectl -n kserve set image deployment/kserve-controller-manager \
-  kube-rbac-proxy=quay.io/brancz/kube-rbac-proxy:v0.14.0
-kubectl -n kserve rollout status deployment/kserve-controller-manager --timeout=3m
-kubectl apply -f https://github.com/kserve/kserve/releases/download/v0.13.0/kserve-cluster-resources.yaml
-
-# 4) serving ns + Pi4-자격 secret + kserve-s3 SA + HTTP-only gateway
-# (handoff §10 의 yaml — 인라인 apply)
-
-# 5) RBAC
-kubectl apply -f pipelines/kfp-rbac.yaml
-kubectl -n serving create rolebinding kfp-serving-deployer-default \
-  --role=kfp-serving-deployer \
-  --serviceaccount=kubeflow:pipeline-runner
-
-# 6) serving-manifests bucket (deploy_canary 의 mc cp 대상)
-docker run --rm --network host --entrypoint sh minio/mc -c "
-  mc alias set pi http://192.168.1.37:9000 admin 'ChangeMe!2026' >/dev/null
-  mc mb --ignore-existing pi/serving-manifests
-"
+curl -s -i \
+  -H 'Host: mlp.mlplatform.local' \
+  -H 'Content-Type: application/json' \
+  -d '{"inputs":[{"name":"input-0","shape":[1,4],"datatype":"FP32","data":[[5.1,3.5,1.4,0.2]]}]}' \
+  http://192.168.1.154/v2/models/mlp/infer
 ```
 
----
+Observed:
 
-## 10. 인라인 apply 한 manifest (재현용 yaml)
-
-### serving ns 의 kserve-s3 SA + Pi4-자격 secret
-
-```yaml
-apiVersion: v1
-kind: Secret
-metadata:
-  name: minio-s3-creds
-  namespace: serving
-  annotations:
-    serving.kserve.io/s3-endpoint: 192.168.1.37:9000
-    serving.kserve.io/s3-usehttps: "0"
-    serving.kserve.io/s3-region: us-east-1
-    serving.kserve.io/s3-useanoncredential: "false"
-type: Opaque
-stringData:
-  AWS_ACCESS_KEY_ID: admin
-  AWS_SECRET_ACCESS_KEY: "ChangeMe!2026"
----
-apiVersion: v1
-kind: ServiceAccount
-metadata:
-  name: kserve-s3
-  namespace: serving
-secrets:
-  - name: minio-s3-creds
+```text
+HTTP/1.1 503 Service Unavailable
 ```
 
-### HTTP-only kserve-gateway (cert-manager ClusterIssuer 없으니 HTTPS 빼고)
+Direct wrapper v2 request:
 
-```yaml
-apiVersion: networking.istio.io/v1beta1
-kind: Gateway
-metadata:
-  name: kserve-gateway
-  namespace: istio-system
-spec:
-  selector:
-    istio: ingressgateway
-  servers:
-    - port: { number: 80, name: http, protocol: HTTP }
-      hosts: ["*.mlplatform.local", "mlp.mlplatform.local"]
+```bash
+kubectl -n serving exec deploy/mlp-canary-predictor -c kserve-container -- \
+  python -c 'import json,urllib.request; payload=json.dumps({"inputs":[{"name":"input-0","shape":[1,4],"datatype":"FP32","data":[[5.1,3.5,1.4,0.2]]}]}).encode(); req=urllib.request.Request("http://127.0.0.1:8080/v2/models/mlp/infer", data=payload, headers={"Content-Type":"application/json"}); r=urllib.request.urlopen(req, timeout=10); print(r.status); print(r.read().decode())'
 ```
 
----
+Observed:
 
-## 11. 알려진 함정 / 다음에 또 만날 자리
+```text
+HTTP Error 500: Internal Server Error
+```
 
-1. ~~trainer image 8.66GB~~ → **1.86GB** (e789c39 + b12cbbd). 해결.
-2. ~~compile-and-register.sh 깨짐~~ → idempotent rewrite (ad89b13). 해결.
-3. ~~deploy_canary 의 templates 로딩~~ → image 에 baked (3f057ca). 해결.
-4. **AGENTS.md** — 사용자가 Codex 용으로 추가, untracked. commit 안 함.
-5. **ad-hoc 클러스터 셋업** — `kubeflow/mlp-endpoints`, `kubeflow/mlp-s3`, `mlops/pipeline-ids`, `serving/{minio-s3-creds, kserve-s3}`, `istio-system/kserve-gateway`, RBAC 들 다 kubectl 한 명령씩. §9 + §10 이 재현 명령. 향후 `scripts/apply-all.sh` 로 통합 권장.
-6. **KFP `search_model_versions().aliases` 가 빈 list** — search API limitation. 실제 alias 는 `get_model_version_by_alias` 또는 `get_registered_model().aliases` 로 (검증됨).
-7. **Disk 78%** — *진짜 hog* 는 k3s containerd image cache (`/var/lib/rancher/k3s/...`) — `sudo crictl rmi --prune` 으로만 정리됨. KServe + Istio + cert-manager image 추가로 더 늘었음. 다음 압박되면 청소.
-8. **KFP default SA = `pipeline-runner`** (kfp-rbac.yaml 이 만든 `kfp-pipeline-runner` 와 *다른 이름*). 새 RoleBinding `kfp-serving-deployer-default` 가 진짜 default SA 에 권한 부여. 다음 컴포넌트가 serving ns 의 다른 리소스 만들 때 동일 패턴.
-9. **kube-rbac-proxy image** — KServe v0.13.0 manifest 의 `gcr.io/kubebuilder/kube-rbac-proxy:v0.13.1` 가 *not found* (GCR 에서 옮김). `kubectl set image` 로 `quay.io/brancz/kube-rbac-proxy:v0.14.0` 로 patch. 새 클러스터 셋업 시 동일 patch 필요.
-10. **KServe OCI helm chart download 실패** — `oci://ghcr.io/kserve/charts/kserve-crd` 가 download error. manifest 방식 (`kubectl apply -f release.yaml`) 우회.
-11. **cert-manager values 의 `prometheus.servicemonitor.enabled: true`** — Prometheus operator (Phase 3 영역) 없으면 install 실패. `--set prometheus.servicemonitor.enabled=false` override.
-12. **istio-gateway values 의 `loadBalancerIP: 10.10.50.201`** — MetalLB 가정. k3s servicelb 에서는 `--set service.loadBalancerIP=""` override. (`--set ...=null` 은 schema 거부.)
-13. **kserve-gateway 의 HTTPS+cert-manager** — `ClusterIssuer/mlplatform-ca` 가 없어서 cert 발급 안 됨. Phase 2 검증용으로 HTTPS 부분 제거 + HTTP only. production 셋업에선 ClusterIssuer 추가 후 원본 yaml 사용.
+## Exact Next Steps
 
----
+1. Start cleanly:
 
-## 12. Hand-off rules (불변)
+   ```bash
+   cd /home/fall/dev/ai_platform
+   git status --short --branch
+   git diff
+   ```
 
-- 새 의존성은 PR 본문에 한 줄 정당화 (CLAUDE.md).
-- `try/except` 는 외부 API/사용자 입력 경계만.
-- 매 step 끝에 *실제 동작 증거* 첨부. 이 문서의 §4 같은 형식.
-- 막히면 README 보다 *이 문서 + git log + 컴포넌트 코드* 가 진리원본.
-- 컴포넌트 시그니처 변경은 양쪽 파이프라인 + register 의 호출부 모두 일관되게.
-- KFP component 본문에서 외부 모듈 import 금지 — `pipelines/components/common.py` 는 *파이프라인 정의용* 헬퍼만 (`attach_platform_env`). 컴포넌트 본문은 함수 내부 import 만.
+2. Fix `images/trainer/handler.py`.
+
+   Minimum behavior:
+
+   - Decode `bytes`/`str` JSON.
+   - If body is already a list, treat it as rows.
+   - If dict has `instances`, use that.
+   - If dict has `inputs`, take the first input object and use its `data`; respect `shape` if `data` is flat.
+   - Return `torch.tensor(rows, dtype=torch.float32)`.
+
+3. Fix first-deploy routing in `pipelines/components/deploy_canary.py`.
+
+   Before rendering the VirtualService:
+
+   ```bash
+   kubectl -n serving get svc mlp-stable-predictor
+   ```
+
+   If stable is absent, deploy canary at 100 and stable at 0. Do not send traffic to a nonexistent service.
+
+4. Keep/commit the `protocolVersion: v2` template change in `serving/inferenceservice/mlp.yaml.j2`.
+
+5. Rebuild and push trainer image from repo root:
+
+   ```bash
+   docker build -f images/trainer/Dockerfile \
+     -t kfp-registry:5000/mlplatform/trainer:p2.5-v2handler \
+     -t kfp-registry:5000/mlplatform/trainer:latest \
+     .
+   docker push kfp-registry:5000/mlplatform/trainer:p2.5-v2handler
+   docker push kfp-registry:5000/mlplatform/trainer:latest
+   ```
+
+6. Make sure KFP API is reachable:
+
+   ```bash
+   kubectl -n kubeflow port-forward svc/ml-pipeline 8888:8888 >/tmp/kfp-pf.log 2>&1 &
+   sleep 3
+   curl -s http://localhost:8888/apis/v2beta1/pipelines | head -c 200
+   ```
+
+7. Recompile/register pipelines:
+
+   ```bash
+   pipelines/compile-and-register.sh
+   ```
+
+8. Submit the next smoke run:
+
+   ```bash
+   .venv/bin/python scripts/submit-run.py \
+     --name train-smoke-11-v2handler \
+     --git-sha p2.5-v2handler
+   ```
+
+9. Watch it:
+
+   ```bash
+   kubectl -n serving get isvc,vs,pods
+   kubectl -n serving logs deploy/mlp-canary-predictor -c kserve-container --tail=160
+   ```
+
+10. Validate direct predictor first:
+
+    ```bash
+    kubectl -n serving exec deploy/mlp-canary-predictor -c kserve-container -- \
+      python -c 'import json,urllib.request; payload=json.dumps({"inputs":[{"name":"input-0","shape":[1,4],"datatype":"FP32","data":[[5.1,3.5,1.4,0.2]]}]}).encode(); req=urllib.request.Request("http://127.0.0.1:8080/v2/models/mlp/infer", data=payload, headers={"Content-Type":"application/json"}); r=urllib.request.urlopen(req, timeout=10); print(r.status); print(r.read().decode())'
+    ```
+
+11. Validate gateway after VirtualService no longer routes to missing stable:
+
+    ```bash
+    curl -s -i \
+      -H 'Host: mlp.mlplatform.local' \
+      -H 'Content-Type: application/json' \
+      -d '{"inputs":[{"name":"input-0","shape":[1,4],"datatype":"FP32","data":[[5.1,3.5,1.4,0.2]]}]}' \
+      http://192.168.1.154/v2/models/mlp/infer
+    ```
+
+12. Only after HTTP 200 with prediction body, mark Phase 2.5 green and proceed to Phase 3:
+
+    - deploy/verify `inference-logger`
+    - build `evidently-job`, `ml-webhook`, `canary-job`, `rollback-job`
+    - wire drift -> finetune -> canary -> promote/rollback
+

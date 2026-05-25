@@ -25,6 +25,7 @@ spec:
       modelFormat:
         name: pytorch
       runtime: kserve-torchserve     # PyTorch 표준 런타임
+      protocolVersion: {{ protocol_version | default('v2') }}   # KServe wrapper 가 OIP 로 변환 — torchserve 와 호환
       storageUri: "{{ storage_uri }}"
       resources:
         requests:
