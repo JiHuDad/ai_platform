@@ -129,6 +129,14 @@ drift inject (200 req) → inference-logger NDJSON 적재 → Evidently job
 ## Current Bugs / Risks
 
 - ~~`mlp-finetune-jkkrn` Failed~~ → ✅ 새 run `finetune-mlp-1779704542` Succeeded.
+- ✅ **promote default dwell 전체 cycle 통과** (`promote-mlp-v13-20260525t102519` Completions=1/1 DURATION=55m): 10/50/100% × 900/1800/600s, MLflow alias rotation, stable Ready, VS=100/0, canary scale-to-zero.
+- ⚠️ **SLO gate metric source 한계**: `promote.py` 의 SLO query 가 `istio_requests_total{destination_app=...}` 사용. predictor pod 에 Istio sidecar 미주입 → metric 부재 → SLO check 가 항상 zero 통과. serving ns 에 `istio-injection=enabled` 라벨 박아도 KServe Raw 모드의 webhook namespaceSelector 충돌로 sidecar 안 들어감. 진짜 fix 옵션:
+  - KServe ConfigMap 의 sidecar opt-in (storage-initializer 와 init order 검증 필요)
+  - 또는 SLO query 를 KServe 자체 metric (kserve-predictors ServiceMonitor) 로 변경
+  - 또는 ingressgateway metric (`source_workload="istio-ingressgateway"`) 으로
+  - 우리 toy 환경의 진짜 가치 한계 — production traffic 자리.
+- ✅ **Disk cleanup**: 90% → 84% (`docker image prune -a` + 183 succeeded pods 삭제, 12.41GB 회수).
+- ✅ Load test (정상 traffic 100 req via gateway): ok=100/0 — gateway routing OK.
 - The manual promote Job used `PROMOTE_STEPS=100:60` for fast validation. Production/default promote still uses `10%/50%/100%` with 900/1800/600 second dwell.
 - Prometheus SLO queries returned zeros in the manual promotion because there was little/no active traffic. Add sustained traffic before treating SLO gates as load-tested.
 - `mlp-canary` InferenceService remains `Ready=True` even though its Deployment is scaled to 0. This is acceptable for rollback staging, but dashboard readers may find it confusing.
