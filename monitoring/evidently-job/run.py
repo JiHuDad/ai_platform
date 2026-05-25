@@ -22,6 +22,7 @@ from datetime import datetime, timedelta, timezone
 
 import boto3
 import pandas as pd
+from botocore.exceptions import ClientError
 from evidently.metric_preset import DataDriftPreset
 from evidently.report import Report
 from prometheus_client import CollectorRegistry, Gauge, push_to_gateway
@@ -40,11 +41,68 @@ def s3():
 
 
 def load_reference(model_name: str, model_version: str) -> pd.DataFrame:
-    obj = s3().get_object(
-        Bucket="reference-data",
-        Key=f"{model_name}/{model_version}/reference.parquet",
-    )
+    c = s3()
+    key = f"{model_name}/{model_version}/reference.parquet"
+    try:
+        obj = c.get_object(Bucket="reference-data", Key=key)
+    except ClientError as e:
+        code = e.response.get("Error", {}).get("Code")
+        if model_version != "current" or code not in ("NoSuchKey", "NoSuchBucket", "404"):
+            raise
+        key = latest_reference_key(c, model_name)
+        log.warning("reference current missing; using %s", key)
+        obj = c.get_object(Bucket="reference-data", Key=key)
     return pd.read_parquet(io.BytesIO(obj["Body"].read()))
+
+
+def latest_reference_key(c, model_name: str) -> str:
+    prefix = f"{model_name}/"
+    keys: list[str] = []
+    paginator = c.get_paginator("list_objects_v2")
+    for page in paginator.paginate(Bucket="reference-data", Prefix=prefix):
+        for it in page.get("Contents", []):
+            key = it["Key"]
+            if key.endswith("/reference.parquet"):
+                keys.append(key)
+    if not keys:
+        raise FileNotFoundError(f"no reference parquet under s3://reference-data/{prefix}")
+
+    def sort_key(key: str):
+        version = key.split("/")[1]
+        return (0, int(version)) if version.isdigit() else (1, version)
+
+    return sorted(keys, key=sort_key)[-1]
+
+
+def rows_from_payload(payload) -> list[dict]:
+    if isinstance(payload, dict):
+        if "instances" in payload:
+            return rows_from_payload(payload["instances"])
+        if "inputs" in payload:
+            inputs = payload["inputs"]
+            if inputs and isinstance(inputs[0], dict) and "data" in inputs[0]:
+                return rows_from_payload(inputs[0]["data"])
+            return rows_from_payload(inputs)
+        for key in ("request", "raw", "body", "data"):
+            if key in payload:
+                return rows_from_payload(payload[key])
+        return [payload]
+    if isinstance(payload, (bytes, bytearray)):
+        return rows_from_payload(json.loads(payload))
+    if isinstance(payload, str):
+        try:
+            return rows_from_payload(json.loads(payload))
+        except Exception:
+            return []
+    if isinstance(payload, list):
+        rows = []
+        for item in payload:
+            if isinstance(item, dict):
+                rows.append(item)
+            elif isinstance(item, list):
+                rows.append({f"f{i}": v for i, v in enumerate(item)})
+        return rows
+    return []
 
 
 def load_recent_logs(model_name: str, window_minutes: int) -> pd.DataFrame:
@@ -67,12 +125,7 @@ def load_recent_logs(model_name: str, window_minutes: int) -> pd.DataFrame:
                         rec = json.loads(line)
                     except Exception:
                         continue
-                    feats = rec.get("instances") or rec.get("inputs") or []
-                    for inst in feats:
-                        if isinstance(inst, list):
-                            rows.append({f"f{i}": v for i, v in enumerate(inst)})
-                        elif isinstance(inst, dict):
-                            rows.append(inst)
+                    rows.extend(rows_from_payload(rec))
     if not rows:
         return pd.DataFrame()
     return pd.DataFrame(rows)

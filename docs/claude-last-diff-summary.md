@@ -1,127 +1,43 @@
 # Claude/Codex Last Diff Summary
 
-Snapshot: 2026-05-25 12:03:20 KST
+Snapshot: 2026-05-25 KST.
 
-This file summarizes the live diff and the current verification result. The full handoff is in `docs/ai-handoff.md`.
+## What Changed
 
-## Current Diff
+- Added `serving/inference-logger/` FastAPI app and image.
+- Added `inference-logger` to `images/build-and-push.sh`.
+- Updated `serving/inference-logger.yaml` to use Pi4 MinIO.
+- Updated `monitoring/evidently-job/run.py`:
+  - fallback from missing `current` reference to latest available reference
+  - parse logger/KServe v2 payload shapes
+- Updated `monitoring/evidently-job/cronjob.yaml`:
+  - Pi4 MinIO endpoint
+  - removed embedded MinIO credentials
 
-Branch:
+## Verification
 
-```text
-main...origin/main [ahead 1]
-```
-
-Committed but not pushed:
-
-```text
-df455a7 feat: TorchServe config.properties 정합 — predictor pod 진짜 Ready
-```
-
-Committed file changes in `df455a7`:
-
-- `pipelines/components/train_mlp.py`
-  - Added TorchServe `.mar` packaging.
-  - Added `/mnt/models/config/config.properties`.
-  - Moved TorchServe internal HTTP ports to `7080/7081/7082`.
-  - Added `model_snapshot`, gRPC ports, metrics config, `load_models=mlp.mar`.
-- `scripts/submit-run.py`
-  - Added repeatable KFP run submission helper.
-
-Uncommitted:
-
-- `serving/inferenceservice/mlp.yaml.j2`
-  - Adds `protocolVersion: {{ protocol_version | default('v2') }}`.
-- `AGENTS.md`
-  - Codex entry instructions and local llama sidekick guardrails.
-- `docs/ai-handoff.md`
-- `docs/claude-last-diff-summary.md`
-
-No code fix was applied in this handoff pass beyond documenting the state.
-
-## Verification Performed
-
-KServe:
+Passed:
 
 ```text
-mlp-canary READY=True
-revision=mlp-v10
-protocol=v2
-storage=s3://mlflow-artifacts/0/b2f4e2e3f7e942cda5cc5c2424fe9b1d/artifacts/model
-pods=2/2 Running x2
+python3 -m py_compile monitoring/evidently-job/run.py serving/inference-logger/main.py
+docker build/push:
+  mlplatform/evidently-job:ph3-logger, latest
+  mlplatform/inference-logger:ph3-logger, latest
+kubectl rollout status deploy/inference-logger -n serving
+KServe gateway inference HTTP 200
+inference-logger POST /log/mlp/canary HTTP 200
+MinIO inference-logs objects created
 ```
 
-MLflow:
+Failed/blocked:
 
 ```text
-aliases {'staging': '10'}
-v9  test_accuracy=0.782608695652174  git_sha=p2.5-ports
-v10 test_accuracy=0.782608695652174  git_sha=p2.5-v2protocol
-dataset_uri=s3://datasets/demo/iris/20260523-v1/
+manual evidently job -> InvalidAccessKeyId
 ```
 
-Pi4:
+Reason: `monitoring-minio-creds` currently contains credentials rejected by Pi4 MinIO.
 
-```text
-minio, registry, mlflow all Up
-```
+## Next
 
-Direct metadata check:
-
-```bash
-kubectl -n serving exec deploy/mlp-canary-predictor -c kserve-container -- \
-  python -c 'import urllib.request; r=urllib.request.urlopen("http://127.0.0.1:8080/v2/models/mlp", timeout=10); print(r.status); print(r.read().decode())'
-```
-
-Result:
-
-```text
-200
-{"name":"mlp","versions":null,"platform":"","inputs":[],"outputs":[]}
-```
-
-## Current Failures
-
-1. Direct v2 inference fails inside the predictor.
-
-   Log:
-
-   ```text
-   File "/home/model-server/tmp/models/.../handler.py", line 25, in preprocess
-     instances = body.get("instances") or body.get("inputs") or body
-   AttributeError: 'list' object has no attribute 'get'
-   ```
-
-   Meaning: `images/trainer/handler.py` does not handle the actual TorchServe/KServe v2 envelope shape.
-
-2. Gateway calls return 503 because the VirtualService sends 90% traffic to missing stable.
-
-   Current route:
-
-   ```text
-   mlp-stable-predictor.serving.svc.cluster.local weight=90
-   mlp-canary-predictor.serving.svc.cluster.local weight=10
-   ```
-
-   But only `mlp-canary-predictor` exists.
-
-3. `inference-logger` is referenced by the InferenceService but not deployed.
-
-   ```text
-   services "inference-logger" not found
-   deployments.apps "inference-logger" not found
-   ```
-
-## Next Patch
-
-Patch these first:
-
-- `images/trainer/handler.py`
-  - parse KServe v2/OIP `inputs[0].data`
-  - tolerate body already being a list
-- `pipelines/components/deploy_canary.py`
-  - if no stable predictor service exists, render canary 100 / stable 0 or omit stable route
-- keep `serving/inferenceservice/mlp.yaml.j2` `protocolVersion: v2`
-
-Then rebuild trainer, submit `train-smoke-11-v2handler`, and require HTTP 200 from `/v2/models/mlp/infer` before Phase 3.
+Ask the user to approve creating a least-privilege MinIO user for monitoring. Then update only the Kubernetes Secret, rerun `evidently-mlp-manual`, and verify Pushgateway metrics.
 

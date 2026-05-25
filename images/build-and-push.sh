@@ -15,6 +15,7 @@ cd "$(dirname "$0")/.."
 declare -A images=(
   [trainer]="images/trainer/Dockerfile|."
   [evidently-job]="monitoring/evidently-job/Dockerfile|monitoring/evidently-job"
+  [inference-logger]="serving/inference-logger/Dockerfile|serving/inference-logger"
   [ml-webhook]="controller/webhook/Dockerfile|controller/webhook"
   [rollback-job]="controller/rollback-job/Dockerfile|controller/rollback-job"
   [canary-job]="controller/canary-job/Dockerfile|controller/canary-job"
