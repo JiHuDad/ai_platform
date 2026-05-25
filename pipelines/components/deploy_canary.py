@@ -45,6 +45,18 @@ def deploy_canary(
     subprocess.run(["kubectl", "apply", "-f", "/tmp/canary.yaml"], check=True)
 
     # 2) VirtualService weight 업데이트 (없으면 생성)
+    # stable predictor service 부재 시 canary 100/stable 0 — 모든 트래픽이 canary 로 (첫 배포).
+    stable_svc_check = subprocess.run(
+        ["kubectl", "-n", serving_ns, "get", "svc", f"{model_name}-stable-predictor"],
+        capture_output=True,
+    )
+    if stable_svc_check.returncode == 0:
+        sw, cw = 100 - initial_canary_weight, initial_canary_weight
+        print(f"[deploy] stable predictor 존재 — weight stable={sw}/canary={cw}")
+    else:
+        sw, cw = 0, 100
+        print(f"[deploy] stable predictor 부재 — weight stable=0/canary=100")
+
     vs_tmpl = Path("/templates/virtualservice.yaml.j2").read_text()
     vs_yaml = Template(vs_tmpl).render(
         name=model_name,
@@ -52,8 +64,8 @@ def deploy_canary(
         host=f"{model_name}.mlplatform.local",
         stable_host=f"{model_name}-stable-predictor.{serving_ns}.svc.cluster.local",
         canary_host=f"{model_name}-canary-predictor.{serving_ns}.svc.cluster.local",
-        stable_weight=100 - initial_canary_weight,
-        canary_weight=initial_canary_weight,
+        stable_weight=sw,
+        canary_weight=cw,
         canary_revision=revision,
     )
     Path("/tmp/vs.yaml").write_text(vs_yaml)
