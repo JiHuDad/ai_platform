@@ -6,7 +6,23 @@ This handoff is for a fresh coding agent. Read this file, `docs/claude-last-diff
 
 ## Objective
 
-**Phase 2.5 ✅ DONE.** mlp v12 가 진짜 inference HTTP 200 응답 (internal + gateway 둘 다, predictions=[2]). Phase 3 (drift→finetune→canary→promote/rollback 자동화 루프) 진입 자격 충족.
+**Phase 2.5 ✅ DONE.** mlp v12 inference HTTP 200 (internal + gateway, predictions=[2]).
+
+**Phase 3 컴포넌트 ✅ 배포 완료 (08f661e).** 다음은 *E2E drift 루프 검증*:
+- kube-prometheus-stack (Prometheus + Alertmanager + Grafana + node-exporter + kube-state-metrics, 6 pods Running)
+- pushgateway (monitoring ns)
+- PrometheusRule `mlp-drift` (drift score + SLO alerts)
+- KServe ServiceMonitor `kserve-predictors`
+- evidently-mlp CronJob (15분 주기)
+- ml-webhook Deployment 2/2 Running, /healthz=ok, mlops ns
+- rollback-runner SA + Role (serving ns)
+- Alertmanager webhook routing: drift→ml-webhook/trigger, slo→ml-webhook/rollback
+
+**E2E 검증 *전* 남은 자리 2개**:
+1. **inference-logger 부재** — KServe payload logger 의 sink 가 없어서 inference logs 적재 X. 별도 image (`kfp-registry:5000/mlplatform/inference-logger:latest`) 필요. Dockerfile + 짧은 Python (NDJSON → MinIO s3://inference-logs). 또는 *수동 drift_score push* 로 우회.
+2. **evidently MODEL_VERSION="current"** — preprocess.py 가 *각 model_version* path 에 reference.parquet 업로드. "current" alias path 부재 → evidently 의 load_reference fail. Fix: preprocess 가 *current* 도 같이 업로드, 또는 CronJob env 의 MODEL_VERSION 을 *실제 version (e.g. 12)* 로.
+
+**Phase 3 의 진짜 green-light** = drift inject → metric push → alert firing → webhook trigger → finetune_pipeline run → mlp v? 등록 → deploy_canary update → promote_job step-up.
 
 ## Phase 2.5 의 진짜 진실 (사용자 직접 검증)
 
