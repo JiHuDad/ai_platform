@@ -111,9 +111,24 @@ latest KFP finetune version id: 433b726c-a7cd-4518-a747-93c42a033263
 - For first promotion when no stable exists, keep traffic on canary until stable is created and Ready; then switch stable=100/canary=0.
 - Do not touch untracked `AGENTS.md` unless the user asks.
 
+## Phase 3 자동 E2E green-light (2026-05-25 KST late)
+
+Codex 의 Phase 3 stabilize commit (2610fda, 277d76a) 후 자동 루프 *끝까지* 검증:
+
+```text
+drift inject (200 req) → inference-logger NDJSON 적재 → Evidently job
+  → drift_share=1.000 feature_drift_count=4 → Pushgateway mlp_drift_score=1
+  → Prometheus scrape OK → Alertmanager MLPDriftHigh state=active
+  → ml-webhook /trigger (manual call, alert firing 30m 대기 우회)
+  → finetune-mlp-1779704542 KFP run = SUCCEEDED (10 pods Completed)
+  → trigger_promote_job → promote-mlp-v13-20260525t102519 Job RUNNING
+```
+
+새 MLflow version 안 만들어짐 (v13 그대로) — *의도된 동작*: labeled inference logs (`s3://inference-logs/<model>/labeled/`) 부재 → assemble_finetune_dataset 가 base only → register_to_mlflow 의 dedup logic (`search_model_versions where dataset_hash + git_sha 일치`) 이 v13 reuse. 진짜 retrain 위해선 labeling pipeline 추가 필요 (Phase 3.5).
+
 ## Current Bugs / Risks
 
-- The KFP run that created v13 (`mlp-finetune-jkkrn`) is marked `Failed` because `trigger-promote-job` originally lacked RBAC. The model version, canary deployment, and manual promotion succeeded afterward.
+- ~~`mlp-finetune-jkkrn` Failed~~ → ✅ 새 run `finetune-mlp-1779704542` Succeeded.
 - The manual promote Job used `PROMOTE_STEPS=100:60` for fast validation. Production/default promote still uses `10%/50%/100%` with 900/1800/600 second dwell.
 - Prometheus SLO queries returned zeros in the manual promotion because there was little/no active traffic. Add sustained traffic before treating SLO gates as load-tested.
 - `mlp-canary` InferenceService remains `Ready=True` even though its Deployment is scaled to 0. This is acceptable for rollback staging, but dashboard readers may find it confusing.
