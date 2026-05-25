@@ -53,7 +53,7 @@ def trigger_promote_job(
                                             value="http://monitoring-kube-prometheus-prometheus.monitoring:9090"),
                             client.V1EnvVar(name="MLFLOW_TRACKING_URI",
                                             value=os.environ.get("MLFLOW_TRACKING_URI",
-                                                                 "http://mlflow.mlflow:5000")),
+                                                                 "http://192.168.1.37:5001")),
                         ],
                         resources=client.V1ResourceRequirements(
                             requests={"cpu": "100m", "memory": "256Mi"},

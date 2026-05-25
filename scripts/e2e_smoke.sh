@@ -12,6 +12,12 @@ MODEL="${MODEL:-mlp}"
 NS="${NS:-serving}"
 MINIO="kubectl -n minio exec -i deploy/minio -- mc"
 
+gateway_url() {
+  local ip
+  ip="$(kubectl -n istio-system get svc istio-ingressgateway -o jsonpath='{.status.loadBalancer.ingress[0].ip}')"
+  echo "http://${ip}"
+}
+
 run_step() {
   local name="$1"
   echo
@@ -55,17 +61,21 @@ PY
 
 step_3_serve_curl() {
   run_step "3) Inference 엔드포인트 호출"
-  EP="$(kubectl -n ${NS} get isvc ${MODEL}-canary -o jsonpath='{.status.url}')"
-  echo "endpoint: ${EP}"
-  curl -fsSL -H 'Content-Type: application/json' \
-    -d '{"instances":[[5.1,3.5,1.4,0.2]]}' \
-    "${EP}/v1/models/${MODEL}:predict" | tee /tmp/predict.json
+  EP="$(gateway_url)"
+  echo "endpoint: ${EP}/v2/models/${MODEL}/infer"
+  curl -fsSL \
+    -H "Host: ${MODEL}.mlplatform.local" \
+    -H 'Content-Type: application/json' \
+    -d '{"inputs":[{"name":"input-0","shape":[1,4],"datatype":"FP32","data":[[5.1,3.5,1.4,0.2]]}]}' \
+    "${EP}/v2/models/${MODEL}/infer" | tee /tmp/predict.json
 }
 
 step_4_drift_inject() {
   run_step "4) Drift 주입 (1000건 shifted payload)"
+  EP="$(gateway_url)"
   python "$(dirname "$0")/perturb_inference.py" \
-    --url "http://mlp.mlplatform.local/v1/models/${MODEL}:predict" \
+    --url "${EP}/v2/models/${MODEL}/infer" \
+    --host-header "${MODEL}.mlplatform.local" \
     --n 1000 --shift 3.0 --qps 20
 }
 

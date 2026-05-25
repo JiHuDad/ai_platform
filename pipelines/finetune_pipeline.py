@@ -30,18 +30,23 @@ def finetune_pipeline(
     git_sha: str = "auto",
     triggered_by: str = "drift",
 ):
-    prod = attach_platform_env(pull_production_model(model_name=model_name))
-    ds = attach_platform_env(assemble_finetune_dataset(
+    def run_once(task):
+        task = attach_platform_env(task)
+        task.set_caching_options(False)
+        return task
+
+    prod = run_once(pull_production_model(model_name=model_name))
+    ds = run_once(assemble_finetune_dataset(
         model_name=model_name,
         base_dataset_uri=base_dataset_uri,
         window_hours=window_hours,
     ))
-    prep = attach_platform_env(preprocess(
+    prep = run_once(preprocess(
         input_dir=ds.outputs["output_dir"],
         model_name=model_name,
         model_version="finetune",
     ))
-    tr = attach_platform_env(train_mlp(
+    tr = run_once(train_mlp(
         train_npz=prep.outputs["train_out"],
         val_npz=prep.outputs["val_out"],
         hidden_dims=hidden_dims,
@@ -50,13 +55,13 @@ def finetune_pipeline(
         batch_size=batch_size,
         base_checkpoint_uri=prod.outputs["base_checkpoint_uri"],
     ))
-    ev = attach_platform_env(evaluate(
+    ev = run_once(evaluate(
         model_dir=tr.outputs["model_out"],
         test_npz=prep.outputs["test_out"],
         baseline_accuracy=prod.outputs["production_accuracy"],
     ))
     with dsl.If(ev.outputs["passed"] == "true", name="fine-tune-improved"):
-        reg = attach_platform_env(register_to_mlflow(
+        reg = run_once(register_to_mlflow(
             model_dir=tr.outputs["model_out"],
             metrics=ev.outputs["metrics_out"],
             model_name=model_name,
@@ -67,13 +72,13 @@ def finetune_pipeline(
             triggered_by=triggered_by,
             base_dataset_uri=base_dataset_uri,  # finetune lineage: 어느 base 에서 derive 됐는지.
         ))
-        dep = attach_platform_env(deploy_canary(
+        dep = run_once(deploy_canary(
             model_name=model_name,
             model_version=reg.outputs["model_version_out"],
             storage_uri=reg.outputs["model_uri_out"],
             initial_canary_weight=10,
         )).after(reg)
-        attach_platform_env(trigger_promote_job(
+        run_once(trigger_promote_job(
             model_name=model_name,
             new_model_version=reg.outputs["model_version_out"],
             serving_ns="serving",

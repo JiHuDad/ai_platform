@@ -13,6 +13,7 @@
 """
 from __future__ import annotations
 
+import copy
 import json
 import logging
 import os
@@ -33,7 +34,7 @@ MODEL = os.environ["MODEL_NAME"]
 NEW_VERSION = os.environ["NEW_MODEL_VERSION"]
 SERVING_NS = os.environ.get("SERVING_NS", "serving")
 PROMETHEUS = os.environ.get("PROMETHEUS_URL", "http://monitoring-kube-prometheus-prometheus.monitoring:9090")
-MLFLOW_URI = os.environ.get("MLFLOW_TRACKING_URI", "http://mlflow.mlflow:5000")
+MLFLOW_URI = os.environ.get("MLFLOW_TRACKING_URI", "http://192.168.1.37:5001")
 
 mlflow.set_tracking_uri(MLFLOW_URI)
 prom = PrometheusConnect(url=PROMETHEUS, disable_ssl=True)
@@ -43,6 +44,7 @@ try:
 except Exception:
     k8s_config.load_kube_config()
 custom = k8s.CustomObjectsApi()
+apps = k8s.AppsV1Api()
 
 
 @dataclass
@@ -57,11 +59,74 @@ STEPS = [
     Step(canary=50, dwell_s=1800, label="50%"),
     Step(canary=100, dwell_s=600, label="100%"),
 ]
+SLO_POLL_SECONDS = int(os.environ.get("SLO_POLL_SECONDS", "60"))
 
 
-def patch_weight(canary: int):
+def _parse_steps(raw: str | None) -> list[Step]:
+    if not raw:
+        return STEPS
+    parsed: list[Step] = []
+    for item in raw.split(","):
+        canary_s, dwell_s = item.split(":", 1)
+        canary = int(canary_s)
+        dwell_s_int = int(dwell_s)
+        if canary < 0 or canary > 100 or dwell_s_int < 1:
+            raise ValueError(f"invalid PROMOTE_STEPS item: {item}")
+        parsed.append(Step(canary=canary, dwell_s=dwell_s_int, label=f"{canary}%"))
+    if not parsed:
+        raise ValueError("PROMOTE_STEPS produced no steps")
+    return parsed
+
+
+PROMOTE_STEPS = _parse_steps(os.environ.get("PROMOTE_STEPS"))
+
+
+def _isvc_ready(name: str) -> bool:
+    try:
+        obj = custom.get_namespaced_custom_object(
+            group="serving.kserve.io", version="v1beta1",
+            namespace=SERVING_NS, plural="inferenceservices", name=name,
+        )
+    except k8s.exceptions.ApiException as e:
+        if e.status == 404:
+            return False
+        raise
+
+    generation = obj.get("metadata", {}).get("generation")
+    observed = obj.get("status", {}).get("observedGeneration")
+    if generation and observed and int(observed) < int(generation):
+        return False
+    return any(
+        c.get("type") == "Ready" and c.get("status") == "True"
+        for c in obj.get("status", {}).get("conditions", [])
+    )
+
+
+def _wait_for_isvc_ready(name: str, timeout_s: int = 600):
+    deadline = time.time() + timeout_s
+    while time.time() < deadline:
+        if _isvc_ready(name):
+            log.info("InferenceService %s is Ready", name)
+            return
+        log.info("waiting for InferenceService %s to become Ready", name)
+        time.sleep(10)
+    raise TimeoutError(f"InferenceService {name} did not become Ready within {timeout_s}s")
+
+
+def patch_weight(canary: int, stable_revision: str | None = None):
     stable = 100 - canary
+    if stable > 0 and not _isvc_ready(f"{MODEL}-stable"):
+        log.warning(
+            "stable InferenceService is not Ready; keeping traffic on canary "
+            "instead of routing stable=%d/canary=%d",
+            stable, canary,
+        )
+        stable, canary = 0, 100
+    labels = {"canary-revision": f"{MODEL}-v{NEW_VERSION}"}
+    if stable_revision:
+        labels["stable-revision"] = stable_revision
     body = {
+        "metadata": {"labels": labels},
         "spec": {
             "http": [{
                 "name": "weighted",
@@ -143,7 +208,27 @@ def promote_alias_and_stable_isvc():
 
     # stable InferenceService 의 storageUri 를 새 버전으로 교체.
     new_uri = cli.get_model_version(MODEL, NEW_VERSION).source.replace("mlflow-artifacts:", "s3://mlflow-artifacts")
-    body = {"spec": {"predictor": {"model": {"storageUri": new_uri}}}}
+    body = {
+        "metadata": {
+            "labels": {
+                "app": MODEL,
+                "variant": "stable",
+                "model-revision": f"{MODEL}-v{NEW_VERSION}",
+            }
+        },
+        "spec": {
+            "predictor": {
+                "logger": {
+                    "mode": "all",
+                    "url": f"http://inference-logger.serving.svc/log/{MODEL}/stable",
+                },
+                "model": {
+                    "storageUri": new_uri,
+                    "env": [{"name": "STORAGE_URI", "value": new_uri}],
+                },
+            }
+        },
+    }
     try:
         custom.patch_namespaced_custom_object(
             group="serving.kserve.io", version="v1beta1",
@@ -158,12 +243,30 @@ def promote_alias_and_stable_isvc():
                 group="serving.kserve.io", version="v1beta1",
                 namespace=SERVING_NS, plural="inferenceservices", name=f"{MODEL}-canary",
             )
-            spec = canary["spec"]
+            spec = copy.deepcopy(canary["spec"])
+            predictor = spec.setdefault("predictor", {})
+            predictor["logger"] = {
+                "mode": "all",
+                "url": f"http://inference-logger.serving.svc/log/{MODEL}/stable",
+            }
+            model = predictor.setdefault("model", {})
+            model["storageUri"] = new_uri
+            model["env"] = [{"name": "STORAGE_URI", "value": new_uri}]
+            annotations = canary.get("metadata", {}).get("annotations", {}).copy()
+            annotations.pop("kubectl.kubernetes.io/last-applied-configuration", None)
             new = {
                 "apiVersion": "serving.kserve.io/v1beta1",
                 "kind": "InferenceService",
-                "metadata": {"name": f"{MODEL}-stable", "namespace": SERVING_NS,
-                             "annotations": canary.get("metadata", {}).get("annotations", {})},
+                "metadata": {
+                    "name": f"{MODEL}-stable",
+                    "namespace": SERVING_NS,
+                    "annotations": annotations,
+                    "labels": {
+                        "app": MODEL,
+                        "variant": "stable",
+                        "model-revision": f"{MODEL}-v{NEW_VERSION}",
+                    },
+                },
                 "spec": spec,
             }
             custom.create_namespaced_custom_object(
@@ -174,26 +277,39 @@ def promote_alias_and_stable_isvc():
         else:
             raise
 
+    _wait_for_isvc_ready(f"{MODEL}-stable")
+
     # 트래픽 100% stable 로 복귀, canary scale to 0
-    patch_weight(0)
+    patch_weight(0, stable_revision=f"{MODEL}-v{NEW_VERSION}")
     body0 = {"spec": {"predictor": {"minReplicas": 0, "maxReplicas": 0}}}
     custom.patch_namespaced_custom_object(
         group="serving.kserve.io", version="v1beta1",
         namespace=SERVING_NS, plural="inferenceservices",
         name=f"{MODEL}-canary", body=body0,
     )
+    try:
+        apps.patch_namespaced_deployment_scale(
+            name=f"{MODEL}-canary-predictor",
+            namespace=SERVING_NS,
+            body={"spec": {"replicas": 0}},
+        )
+    except k8s.exceptions.ApiException as e:
+        if e.status == 404:
+            log.warning("canary deployment not found while scaling to zero")
+        else:
+            raise
     log.info("canary scaled to zero — promotion complete")
 
 
 def main() -> int:
-    for i, step in enumerate(STEPS, 1):
-        log.info("==== step %d/%d: canary=%s, dwell=%ds", i, len(STEPS), step.label, step.dwell_s)
+    for i, step in enumerate(PROMOTE_STEPS, 1):
+        log.info("==== step %d/%d: canary=%s, dwell=%ds", i, len(PROMOTE_STEPS), step.label, step.dwell_s)
         patch_weight(step.canary)
         # warm-up 후 SLO 확인을 위해 dwell 동안 폴링.
         deadline = time.time() + step.dwell_s
         last: dict = {}
         while time.time() < deadline:
-            time.sleep(60)
+            time.sleep(min(SLO_POLL_SECONDS, max(1, int(deadline - time.time()))))
             ok, last = slo_pass()
             log.info("slo check: ok=%s metrics=%s", ok, json.dumps(last))
             if not ok:

@@ -1,119 +1,180 @@
-# AI Handoff — ai_platform
+# AI Handoff - ai_platform
 
-Snapshot: 2026-05-25 KST — Phase 3 logger/Evidently wiring pass.
+Snapshot: 2026-05-25 KST - Phase 3 drift-to-finetune-to-promote loop is now functionally through v13.
 
-Read `CLAUDE.md`, `AGENTS.md`, this file, `docs/claude-last-diff-summary.md`, and `git diff` before editing.
+Before editing, read `CLAUDE.md`, `AGENTS.md`, this file, `docs/claude-last-diff-summary.md`, and `git diff`.
 
 ## Objective
 
-Continue Phase 3 E2E drift loop:
+Keep hardening Phase 3:
 
 ```text
 KServe request -> inference-logger -> MinIO inference-logs
 -> Evidently -> Pushgateway/Prometheus -> Alertmanager
--> ml-webhook /trigger -> finetune_pipeline -> canary -> promote
+-> ml-webhook /trigger -> finetune_pipeline
+-> deploy canary -> promote -> MLflow aliases + stable serving
 ```
 
-Phase 2.5 is done: `mlp-v12` returns HTTP 200 from both internal and gateway `/v2/models/mlp/infer`.
+The original gate was: do not enter Phase 3 until internal/gateway predict returns HTTP 200 with a prediction body. That gate is now satisfied for KServe v2:
+
+```bash
+curl -H 'Host: mlp.mlplatform.local' \
+  -H 'Content-Type: application/json' \
+  -d '{"inputs":[{"name":"input-0","shape":[1,4],"datatype":"FP32","data":[[5.1,3.5,1.4,0.2]]}]}' \
+  http://192.168.1.154/v2/models/mlp/infer
+```
+
+Latest result: HTTP 200 with `{"predictions":[2]}` in the response body.
 
 ## Current Truth
 
-Git on `fall@192.168.1.154:/home/fall/dev/ai_platform`:
+Remote repo:
 
 ```text
-## main...origin/main
- M images/build-and-push.sh
- M monitoring/evidently-job/cronjob.yaml
- M monitoring/evidently-job/run.py
- M serving/inference-logger.yaml
-?? AGENTS.md
-?? serving/inference-logger/
+fall@192.168.1.154:/home/fall/dev/ai_platform
+branch: main
+uncommitted tracked changes:
+  M controller/canary-job/promote.py
+  M controller/webhook/deploy.yaml
+  M controller/webhook/main.py
+  M pipelines/components/preprocess.py
+  M pipelines/components/trigger_promote_job.py
+  M pipelines/finetune_pipeline.py
+  M pipelines/kfp-rbac.yaml
+  M scripts/e2e_smoke.sh
+  M scripts/perturb_inference.py
+untracked:
+  ?? AGENTS.md
 ```
 
-Cluster:
+Cluster state after manual v13 promotion:
 
 ```text
-serving/inference-logger: 2/2 pods Running
-serving/mlp-canary: READY=True, revision=mlp-v12
-monitoring/evidently-mlp: configured, but latest runs still fail until monitoring-minio-creds is fixed
-registry: mlplatform/inference-logger tags ph3-logger, latest
-registry: mlplatform/evidently-job tags ph3-logger, be5fff5, latest
+serving/mlp-stable: READY=True, 2/2 predictor pods
+serving/mlp-canary deployment: 0/0 replicas
+serving/VirtualService mlp weights: stable=100 canary=0
+serving/VirtualService labels: canary-revision=mlp-v13 stable-revision=mlp-v13
+MLflow alias production=v13
+MLflow alias previous=v12
+MLflow alias staging=v13
 ```
 
-Verified:
+Image and pipeline updates pushed to the local registry:
 
 ```text
-KServe gateway infer -> HTTP 200
-inference-logger received POST /log/mlp/canary -> HTTP 200
-MinIO inference-logs/mlp/canary/...jsonl objects were created
+kfp-registry:5000/mlplatform/ml-webhook:latest
+kfp-registry:5000/mlplatform/canary-job:latest
+latest canary-job digest observed: sha256:62a1555894698f7d8e6fdd025bc415bcc0adc6853eca107213283d729d296406
+latest KFP finetune version: v20260525T092842Z
+latest KFP finetune version id: 433b726c-a7cd-4518-a747-93c42a033263
 ```
 
 ## Files Changed
 
-- `serving/inference-logger/main.py`
-  - FastAPI sink for KServe payload logger.
-  - Writes one NDJSON object per request to `s3://inference-logs/<model>/<variant>/<date>/...jsonl`.
-  - Normalizes `instances` from v1/v2/raw request shapes.
-- `serving/inference-logger/Dockerfile`
-- `serving/inference-logger/requirements.txt`
-- `serving/inference-logger.yaml`
-  - Deploys logger in `serving`.
-  - Uses Pi4 MinIO endpoint `http://192.168.1.37:9000`.
-- `images/build-and-push.sh`
-  - Adds `inference-logger` image.
-- `monitoring/evidently-job/run.py`
-  - Falls back from missing `MODEL_VERSION=current` to the latest available `reference-data/<model>/<version>/reference.parquet`.
-  - Parses logger-normalized records and KServe v2 `inputs[0].data`.
-- `monitoring/evidently-job/cronjob.yaml`
-  - Uses Pi4 MinIO endpoint.
-  - No longer stores MinIO admin credentials in the manifest.
+- `controller/webhook/main.py`
+  - Fixed idempotency handling so alerts are marked only after successful pipeline/job submission.
+  - Removed KFP server-side run filter that KFP 2.15 rejected.
+  - Selects the latest finetune pipeline version from up to 100 versions.
+  - Ignores non-drift alerts for `/trigger`.
+  - Adds `BASE_DATASET_URI` to finetune params.
+- `controller/webhook/deploy.yaml`
+  - Adds `BASE_DATASET_URI`.
+  - Adds `allow-ml-webhook-to-ml-pipeline` NetworkPolicy in `kubeflow`.
+  - Extends `rollback-runner` RBAC for canary deployment scale-to-zero.
+- `pipelines/components/preprocess.py`
+  - Writes KFP output artifacts both to `OutputPath` and the launcher's `minio://` local artifact path.
+- `pipelines/finetune_pipeline.py`
+  - Disables caching for finetune tasks via `run_once(...)`.
+- `pipelines/components/trigger_promote_job.py`
+  - Uses the Pi MLflow endpoint fallback `http://192.168.1.37:5001`.
+- `pipelines/kfp-rbac.yaml`
+  - Allows `kubeflow:pipeline-runner` to create/get/list/watch `jobs.batch` in `serving`.
+- `controller/canary-job/promote.py`
+  - Adds configurable `PROMOTE_STEPS` and `SLO_POLL_SECONDS`.
+  - Avoids routing stable traffic until `mlp-stable` is Ready.
+  - Creates/updates stable with stable logger URL and revision labels.
+  - Waits for stable Ready before switching traffic to stable.
+  - Scales canary Deployment to 0 after promotion.
+- `scripts/e2e_smoke.sh`
+  - Uses gateway + Host header + KServe v2 `/v2/models/<model>/infer`.
+- `scripts/perturb_inference.py`
+  - Sends KServe v2 `inputs` payload and supports `--host-header`.
 
 ## Decisions
 
-- Do not store Pi4 MinIO admin credentials in `monitoring/evidently-job/cronjob.yaml`.
-- Evidently should use a least-privilege MinIO credential with:
+- Current serving protocol is KServe v2. V1 `instances` payloads to `/v1/models/mlp:predict` fail with TorchServe `KeyError: 'inputs'`; tests and load scripts should use v2.
+- Do not promote if v2 predict is not HTTP 200 with a prediction body.
+- Monitoring MinIO credentials are least-privilege, not admin:
   - read/list: `reference-data`, `inference-logs`
   - write: `drift-reports`
-- `MODEL_VERSION=current` stays in the CronJob; code resolves it to latest available reference if the alias path is absent.
-- Smoke/KFP runs should keep cache disabled unless explicitly testing cache behavior.
+- Keep finetune task caching disabled for drift-triggered runs.
+- For first promotion when no stable exists, keep traffic on canary until stable is created and Ready; then switch stable=100/canary=0.
+- Do not touch untracked `AGENTS.md` unless the user asks.
 
-## Current Blocker
+## Current Bugs / Risks
 
-`evidently-mlp` now reaches MinIO but fails with:
+- The KFP run that created v13 (`mlp-finetune-jkkrn`) is marked `Failed` because `trigger-promote-job` originally lacked RBAC. The model version, canary deployment, and manual promotion succeeded afterward.
+- The manual promote Job used `PROMOTE_STEPS=100:60` for fast validation. Production/default promote still uses `10%/50%/100%` with 900/1800/600 second dwell.
+- Prometheus SLO queries returned zeros in the manual promotion because there was little/no active traffic. Add sustained traffic before treating SLO gates as load-tested.
+- `mlp-canary` InferenceService remains `Ready=True` even though its Deployment is scaled to 0. This is acceptable for rollback staging, but dashboard readers may find it confusing.
+- Disk usage on `leaf007` was observed around 88.6% in TorchServe metrics. Not blocking now, but cleanup is still advisable before repeated training/image builds.
+
+## Failing Commands / Historical Failures
+
+These are expected historical failures, not the current final state:
 
 ```text
-InvalidAccessKeyId
+curl /v1/models/mlp:predict with {"instances": ...}
+-> HTTP 500, TorchServe kservev2 envelope KeyError: 'inputs'
 ```
-
-Reason: existing `monitoring/monitoring-minio-creds` Secret has credentials that Pi4 MinIO rejects.
-
-Security note: attempts to write MinIO admin credentials, or to create and inject a new persistent MinIO user, were blocked by approval policy. The next user-approved action should be explicit:
 
 ```text
-Approve creating a least-privilege MinIO user for the monitoring namespace,
-limited to reference-data/inference-logs read and drift-reports write.
+KFP trigger-promote-job in mlp-finetune-jkkrn
+-> 403: system:serviceaccount:kubeflow:pipeline-runner cannot create jobs.batch in serving
 ```
 
-After approval, create/update `monitoring-minio-creds` with that limited user. Do not commit the secret material.
+```text
+manual promote job with MLFLOW_TRACKING_URI=http://mlflow.mlflow:5000
+-> DNS failure for mlflow.mlflow
+```
+
+## Verified Commands
+
+```bash
+python3 -m py_compile controller/canary-job/promote.py pipelines/components/trigger_promote_job.py scripts/perturb_inference.py
+bash -n scripts/e2e_smoke.sh
+kubectl apply -f pipelines/kfp-rbac.yaml
+kubectl apply -f controller/webhook/deploy.yaml
+./pipelines/compile-and-register.sh
+./scripts/e2e_smoke.sh 3
+```
+
+Manual v13 promotion completed:
+
+```text
+MLflow alias production=13 (previous->12)
+created stable from canary spec
+InferenceService mlp-stable is Ready
+VirtualService mlp weight stable=100 canary=0
+canary scaled to zero - promotion complete
+```
 
 ## Exact Next Steps
 
-1. Get explicit approval for the limited MinIO monitoring credential.
-2. Create the MinIO policy/user on Pi4 and update only the Kubernetes Secret `monitoring/monitoring-minio-creds`.
-3. Run:
+1. Commit the current tracked changes if review is acceptable. Leave untracked `AGENTS.md` alone unless instructed.
+2. Run a fresh end-to-end drift trigger after the RBAC and pipeline fixes:
 
    ```bash
+   cd /home/fall/dev/ai_platform
+   ./scripts/e2e_smoke.sh 3
+   ./scripts/e2e_smoke.sh 4
    kubectl -n monitoring delete job evidently-mlp-manual --ignore-not-found
    kubectl -n monitoring create job --from=cronjob/evidently-mlp evidently-mlp-manual
-   kubectl -n monitoring wait --for=condition=complete job/evidently-mlp-manual --timeout=240s
+   kubectl -n monitoring wait --for=condition=complete job/evidently-mlp-manual --timeout=300s
    kubectl -n monitoring logs job/evidently-mlp-manual --all-containers=true --tail=240
    ```
 
-4. Verify:
-
-   ```bash
-   kubectl -n monitoring exec deploy/pushgateway -- sh -c 'wget -qO- http://127.0.0.1:9091/metrics || true'
-   ```
-
-5. If metrics exist, push a high drift sample or wait for alert firing, then verify `ml-webhook /trigger` starts a `finetune_pipeline` run.
-
+3. Verify Pushgateway/Prometheus drift metrics and Alertmanager routing.
+4. Trigger `/trigger` again and confirm the new KFP finetune run succeeds all the way through `trigger-promote-job`.
+5. Let the default promote dwell run under real traffic, or explicitly set a short `PROMOTE_STEPS` only for a controlled test.
+6. Clean disk on `leaf007` before repeated image builds/training if usage remains near 90%.

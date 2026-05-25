@@ -26,7 +26,9 @@ log = logging.getLogger("ml-webhook")
 KFP_HOST = os.environ.get("KFP_HOST", "http://ml-pipeline.kubeflow.svc.cluster.local:8888")
 KFP_NAMESPACE = os.environ.get("KFP_NAMESPACE", "kubeflow")
 FINETUNE_PIPELINE_ID = os.environ.get("FINETUNE_PIPELINE_ID", "")
+FINETUNE_PIPELINE_VERSION_ID = os.environ.get("FINETUNE_PIPELINE_VERSION_ID", "")
 FINETUNE_EXPERIMENT = os.environ.get("FINETUNE_EXPERIMENT", "finetune-auto")
+BASE_DATASET_URI = os.environ.get("BASE_DATASET_URI", "s3://datasets/demo/iris/20260523-v1/")
 ROLLBACK_IMAGE = os.environ.get("ROLLBACK_IMAGE", "kfp-registry:5000/mlplatform/rollback-job:latest")
 SERVING_NAMESPACE = os.environ.get("SERVING_NAMESPACE", "serving")
 
@@ -41,33 +43,53 @@ except Exception:
 _batch = k8s.BatchV1Api()
 
 
-def _idempotency_check(key: tuple[str, str]) -> bool:
-    """True 면 신규 — False 면 최근 같은 알림 처리됨."""
+def _prune_idempotency_cache() -> None:
     now = time.time()
-    # cache 청소
     for k, ts in list(_idem.items()):
         if now - ts > IDEM_TTL_S:
             _idem.pop(k, None)
+
+
+def _idempotency_check(key: tuple[str, str]) -> bool:
+    """True 면 신규 — False 면 최근 같은 알림 처리됨."""
+    _prune_idempotency_cache()
     if key in _idem:
         return False
-    _idem[key] = now
     return True
+
+
+def _mark_idempotent(key: tuple[str, str]) -> None:
+    _prune_idempotency_cache()
+    _idem[key] = time.time()
 
 
 def _kfp() -> KFPClient:
     return KFPClient(host=KFP_HOST)
 
 
+def _finetune_pipeline_version_id(client: KFPClient) -> str:
+    if FINETUNE_PIPELINE_VERSION_ID:
+        return FINETUNE_PIPELINE_VERSION_ID
+
+    versions = client.list_pipeline_versions(pipeline_id=FINETUNE_PIPELINE_ID, page_size=100)
+    if not versions.pipeline_versions:
+        raise RuntimeError(f"no pipeline versions found for {FINETUNE_PIPELINE_ID}")
+    latest = max(
+        versions.pipeline_versions,
+        key=lambda version: getattr(version, "created_at", None),
+    )
+    return latest.pipeline_version_id
+
+
 def _has_active_finetune_run(client: KFPClient, model: str) -> bool:
     """동일 모델에 대해 Running 상태 run 이 있는지 확인."""
     exp = client.create_experiment(FINETUNE_EXPERIMENT)
-    runs = client.list_runs(
-        experiment_id=exp.experiment_id,
-        page_size=20,
-        filter='{"predicates":[{"key":"state","op":"EQUALS","string_value":"RUNNING"}]}',
-    )
+    runs = client.list_runs(experiment_id=exp.experiment_id, page_size=20)
     # 단순화: run name 에 모델명 포함 컨벤션 사용 (display_name 에 model substring).
     for r in (runs.runs or []):
+        state = str(getattr(r, "state", "")).upper()
+        if state != "RUNNING":
+            continue
         if model in (r.display_name or ""):
             return True
     return False
@@ -86,6 +108,9 @@ async def trigger(req: Request) -> dict[str, Any]:
 
     for a in fired:
         labels = a.get("labels", {})
+        if labels.get("category") != "model_drift":
+            log.info("non-drift alert skip: %s", labels.get("alertname", "unknown"))
+            continue
         model = labels.get("model", "mlp")
         alertname = labels.get("alertname", "unknown")
         if not _idempotency_check((model, alertname)):
@@ -97,17 +122,22 @@ async def trigger(req: Request) -> dict[str, Any]:
             log.info("active finetune run exists for %s, skipping", model)
             continue
 
+        exp = client.create_experiment(FINETUNE_EXPERIMENT)
+        version_id = _finetune_pipeline_version_id(client)
         run_name = f"finetune-{model}-{int(time.time())}"
         run = client.run_pipeline(
-            experiment_id=client.create_experiment(FINETUNE_EXPERIMENT).experiment_id,
+            experiment_id=exp.experiment_id,
             job_name=run_name,
             pipeline_id=FINETUNE_PIPELINE_ID,
+            version_id=version_id,
             params={
                 "model_name": model,
                 "triggered_by": "drift",
                 "git_sha": os.environ.get("GIT_SHA", "auto"),
+                "base_dataset_uri": BASE_DATASET_URI,
             },
         )
+        _mark_idempotent((model, alertname))
         log.info("submitted finetune run: %s (%s)", run_name, run.run_id)
         triggered.append({"model": model, "run_id": run.run_id, "run_name": run_name})
 
@@ -161,6 +191,7 @@ async def rollback(req: Request) -> dict[str, Any]:
             ),
         )
         _batch.create_namespaced_job(SERVING_NAMESPACE, job)
+        _mark_idempotent((model, "rollback"))
         log.info("submitted rollback job: %s", job_name)
         rolled.append({"model": model, "job": job_name})
 

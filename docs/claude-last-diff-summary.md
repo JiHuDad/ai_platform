@@ -4,40 +4,56 @@ Snapshot: 2026-05-25 KST.
 
 ## What Changed
 
-- Added `serving/inference-logger/` FastAPI app and image.
-- Added `inference-logger` to `images/build-and-push.sh`.
-- Updated `serving/inference-logger.yaml` to use Pi4 MinIO.
-- Updated `monitoring/evidently-job/run.py`:
-  - fallback from missing `current` reference to latest available reference
-  - parse logger/KServe v2 payload shapes
-- Updated `monitoring/evidently-job/cronjob.yaml`:
-  - Pi4 MinIO endpoint
-  - removed embedded MinIO credentials
+- Fixed `ml-webhook` drift trigger flow:
+  - KFP list-runs compatibility
+  - latest pipeline version selection
+  - idempotency after successful submit
+  - ignore non-`model_drift` alerts
+  - pass `BASE_DATASET_URI`
+- Added NetworkPolicy for `mlops/ml-webhook` -> `kubeflow/ml-pipeline:8888`.
+- Fixed KFP artifact output handling in `preprocess.py`.
+- Disabled finetune task caching.
+- Added serving RBAC so `kubeflow:pipeline-runner` can create promote Jobs.
+- Hardened `canary-job/promote.py`:
+  - stable readiness guard
+  - first-stable creation from canary
+  - stable logger/revision labels
+  - configurable short test steps
+  - canary deployment scale-to-zero
+- Updated smoke/drift scripts to KServe v2 payloads.
 
 ## Verification
 
 Passed:
 
 ```text
-python3 -m py_compile monitoring/evidently-job/run.py serving/inference-logger/main.py
-docker build/push:
-  mlplatform/evidently-job:ph3-logger, latest
-  mlplatform/inference-logger:ph3-logger, latest
-kubectl rollout status deploy/inference-logger -n serving
-KServe gateway inference HTTP 200
-inference-logger POST /log/mlp/canary HTTP 200
-MinIO inference-logs objects created
+manual Evidently job completed with least-privilege monitoring MinIO user
+Pushgateway drift metrics present: mlp_drift_score=1, feature_drift_count=4
+ml-webhook /trigger submitted finetune run
+finetune produced MLflow v13
+mlp-canary served v13 and /v2/models/mlp/infer returned HTTP 200
+manual promote job completed
+MLflow aliases: production=v13, previous=v12, staging=v13
+mlp-stable Ready=True with 2 pods
+VirtualService weights: 100 0
+canary deployment scaled to 0/0
 ```
 
-Failed/blocked:
+Failed but fixed:
 
 ```text
-manual evidently job -> InvalidAccessKeyId
+trigger-promote-job 403 on jobs.batch create
+v1 smoke curl failed with KeyError: inputs
+manual promote with http://mlflow.mlflow:5000 DNS failure
 ```
 
-Reason: `monitoring-minio-creds` currently contains credentials rejected by Pi4 MinIO.
+## Current Caveats
+
+- The specific KFP run `mlp-finetune-jkkrn` remains failed historically because the promote RBAC was missing at that time.
+- Promotion was manually validated with `PROMOTE_STEPS=100:60`; default production dwell remains longer.
+- SLO gate still needs a real traffic load test.
+- Disk usage on `leaf007` is high enough to plan cleanup before more heavy cycles.
 
 ## Next
 
-Ask the user to approve creating a least-privilege MinIO user for monitoring. Then update only the Kubernetes Secret, rerun `evidently-mlp-manual`, and verify Pushgateway metrics.
-
+Commit current tracked changes after review, then run a fresh drift-triggered finetune to ensure the entire KFP run now ends `Succeeded` without manual promote.

@@ -14,7 +14,8 @@ import numpy as np
 
 def main():
     p = argparse.ArgumentParser()
-    p.add_argument("--url", default="http://mlp.mlplatform.local/v1/models/mlp:predict")
+    p.add_argument("--url", default="http://mlp.mlplatform.local/v2/models/mlp/infer")
+    p.add_argument("--host-header", default=None)
     p.add_argument("--n", type=int, default=1000)
     p.add_argument("--shift", type=float, default=3.0,
                    help="Feature mean shift (sigma units) 어긋남 정도")
@@ -25,12 +26,20 @@ def main():
     # iris: 4 feature, 학습 시 정규화되었다고 가정 (mean≈0, std≈1).
     sent, errs = 0, 0
     interval = 1.0 / args.qps
+    headers = {"Host": args.host_header} if args.host_header else None
     with httpx.Client(timeout=5.0, verify=False) as c:
         for _ in range(args.n):
             x = rng.normal(loc=args.shift, scale=1.0, size=4).tolist()
-            body = {"instances": [x]}
+            body = {
+                "inputs": [{
+                    "name": "input-0",
+                    "shape": [1, 4],
+                    "datatype": "FP32",
+                    "data": [x],
+                }]
+            }
             try:
-                r = c.post(args.url, json=body)
+                r = c.post(args.url, json=body, headers=headers)
                 sent += 1
                 if r.status_code >= 400:
                     errs += 1
