@@ -1,19 +1,31 @@
 # AI Handoff — ai_platform
 
-Snapshot: 2026-05-25 12:03:20 KST
+Snapshot: 2026-05-25 (KST late afternoon — Phase 2.5 종료, Phase 3 진입 자격 충족)
 
 This handoff is for a fresh coding agent. Read this file, `docs/claude-last-diff-summary.md`, `AGENTS.md`, `CLAUDE.md`, and `git diff` before editing.
 
 ## Objective
 
-Finish Phase 2.5: make the deployed `mlp` KServe/TorchServe predictor return a real HTTP 200 prediction, then move to Phase 3 only after that.
+**Phase 2.5 ✅ DONE.** mlp v12 가 진짜 inference HTTP 200 응답 (internal + gateway 둘 다, predictions=[2]). Phase 3 (drift→finetune→canary→promote/rollback 자동화 루프) 진입 자격 충족.
 
-The platform plumbing is mostly green:
+## Phase 2.5 의 진짜 진실 (사용자 직접 검증)
 
-- KFP trains and registers `mlp`.
-- MLflow/MinIO artifacts exist on the Pi4.
-- KServe `InferenceService` now becomes `READY=True`.
-- The remaining red line is actual inference: request routing and handler input parsing still fail.
+```text
+mlp-canary READY=True
+revision=mlp-v12
+MLflow staging alias = 12
+VirtualService stable=0 canary=100
+handler.py in predictor = 2918 bytes (새 v2 handler)
+
+internal: POST 127.0.0.1:8080/v2/models/mlp/infer → 200, predictions=[2]
+gateway:  POST http://192.168.1.154/v2/models/mlp/infer Host=mlp.mlplatform.local → 200, predictions=[2]
+```
+
+## 진짜 원인 (회고)
+
+B1 archive 의 옛 handler 자리 = **KFP step cache** 였음. train_mlp 가 dataset_hash + epochs 등 input 동일하면 *옛 산출물 재사용*. handler.py 변경은 *컴포넌트 함수 본문* 안에 반영되지만 KFP cache 는 *function body hash + input hash* 로 cache key. handler.py 가 본문 안 import 가 아니라 *image 의 외부 파일* 이라 KFP cache 가 변경 감지 못 함.
+
+→ Smoke 용 run 은 `enable_caching=False` 가 default. `scripts/submit-run.py --cache` 로만 cache 활성. commit `???` 참조.
 
 ## Current State
 

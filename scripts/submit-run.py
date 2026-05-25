@@ -24,6 +24,8 @@ def main():
     p.add_argument("--baseline-acc", type=float, default=0.0)
     p.add_argument("--triggered-by", default="manual")
     p.add_argument("--host", default="http://localhost:8888")
+    p.add_argument("--cache", action="store_true",
+                   help="KFP step cache 활성화 (default: 비활성 — smoke 에서 옛 .mar 재사용 사고 방지)")
     a = p.parse_args()
 
     c = Client(host=a.host)
@@ -39,6 +41,7 @@ def main():
         },
         experiment_name=a.experiment,
         run_name=a.name,
+        enable_caching=a.cache,
     )
     print(f"RUN_ID: {run.run_id}")
     print(f"URL:    {a.host}/#/runs/details/{run.run_id}")
