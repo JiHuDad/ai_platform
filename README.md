@@ -14,6 +14,7 @@ on-prem K8s 위에서 **MinIO + Kubeflow Pipelines + MLflow + KServe(Raw) + Isti
 | [images/](images/)                   | 공통 trainer / evidently / webhook / promote / rollback Dockerfile |
 | [scripts/](scripts/)                 | `apply-all.sh`, `e2e_smoke.sh`, drift 시뮬레이터 |
 | [fixtures/](fixtures/)               | iris 등 smoke 데이터 |
+| [docs/](docs/)                       | [새 모델 추가 가이드](docs/adding-a-new-model.md), 핸드오프 문서 |
 
 ## 설치 순서
 
