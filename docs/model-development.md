@@ -7,6 +7,11 @@
 - **CSV + label 컬럼의 tabular classification** → *코드 변경 0*. dataset 업로드 + KFP run 인자 변경만.
 - 다른 modality / architecture → 변경 양 따라 §3~§5.
 
+> 검증됨 (2026-05-29): `wine` (178 rows / 13 features / 3 classes) 을 *코드 변경 0* 으로
+> train→MLflow 등록→KServe serving→gateway predict 200 (`predictions=[0]`) 까지 통과.
+> 단 이 검증 과정에서 train_mlp 의 torchserve `.mar` name 이 `mlp` 하드코딩이던 버그를
+> 잡아 `model_name` 전달로 fix (commit 78e36c8). 그 fix 이후로 진짜 코드 변경 0.
+
 ## 1. 가장 짧은 path — Tabular classification (코드 변경 0)
 
 ### 1.1 dataset 준비
