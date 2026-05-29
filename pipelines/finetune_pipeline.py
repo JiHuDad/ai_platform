@@ -54,6 +54,7 @@ def finetune_pipeline(
         lr=lr,
         batch_size=batch_size,
         base_checkpoint_uri=prod.outputs["base_checkpoint_uri"],
+        model_name=model_name,
     ))
     ev = run_once(evaluate(
         model_dir=tr.outputs["model_out"],

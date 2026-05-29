@@ -17,6 +17,7 @@ def train_mlp(
     lr: float,
     batch_size: int,
     base_checkpoint_uri: str,     # 빈 문자열이면 from-scratch
+    model_name: str,              # torchserve .mar name — KServe v2 의 /v2/models/<name> 와 매칭돼야.
     model_out: dsl.OutputPath("Model"),
     metrics_out: dsl.OutputPath("Metrics"),
 ) -> None:
@@ -117,14 +118,16 @@ def train_mlp(
 
     # TorchServe layout — KServe 의 kserve-torchserve runtime 이 /mnt/models 에서 기대하는 구조:
     #   /mnt/models/config/config.properties
-    #   /mnt/models/model-store/mlp.mar
+    #   /mnt/models/model-store/<model_name>.mar
+    # model_name 이 KServe v2 의 /v2/models/<name> 와 정확히 매칭돼야 한다 (mlp 하드코딩 금지).
+    mar = f"{model_name}.mar"
     store = out / "model-store"
     conf = out / "config"
     store.mkdir(exist_ok=True)
     conf.mkdir(exist_ok=True)
     subprocess.run([
         "torch-model-archiver",
-        "--model-name", "mlp",
+        "--model-name", model_name,
         "--version", "1.0",
         "--serialized-file", str(out / "model.pt"),
         "--handler", "/templates/handler.py",
@@ -132,12 +135,15 @@ def train_mlp(
         "--force",
     ], check=True)
     # KServe wrapper (parse_config) 가 model_snapshot JSON 을 요구 — 없으면 KeyError.
-    snapshot = (
-        '{"name":"startup.cfg","modelCount":1,"models":{"mlp":{"1.0":{'
-        '"defaultVersion":true,"marName":"mlp.mar",'
-        '"minWorkers":1,"maxWorkers":1,'
-        '"batchSize":1,"maxBatchDelay":100,"responseTimeout":120}}}}'
-    )
+    snapshot = json.dumps({
+        "name": "startup.cfg",
+        "modelCount": 1,
+        "models": {model_name: {"1.0": {
+            "defaultVersion": True, "marName": mar,
+            "minWorkers": 1, "maxWorkers": 1,
+            "batchSize": 1, "maxBatchDelay": 100, "responseTimeout": 120,
+        }}},
+    })
     # TorchServe 는 7080-7082, KServe wrapper 는 8080/8081 — 안 겹쳐야 wrapper 가 자기 server 띄움.
     (conf / "config.properties").write_text(
         "inference_address=http://0.0.0.0:7080\n"
@@ -151,7 +157,7 @@ def train_mlp(
         "metrics_format=prometheus\n"
         "NUM_WORKERS=1\n"
         "model_store=/mnt/models/model-store\n"
-        "load_models=mlp.mar\n"
+        f"load_models={mar}\n"
         f"model_snapshot={snapshot}\n"
     )
-    print(f"[train] saved model to {out}  (+ model-store/mlp.mar + config/config.properties)")
+    print(f"[train] saved model to {out}  (+ model-store/{mar} + config/config.properties)")

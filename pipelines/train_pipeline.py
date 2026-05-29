@@ -46,6 +46,7 @@ def train_pipeline(
         lr=lr,
         batch_size=batch_size,
         base_checkpoint_uri="",
+        model_name=model_name,
     ))
     ev = attach_platform_env(evaluate(
         model_dir=tr.outputs["model_out"],
